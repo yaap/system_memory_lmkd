@@ -65,13 +65,20 @@
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #include <cutils/trace.h>
 
-#define TRACE_KILL_START(pid) ATRACE_INT(__FUNCTION__, pid);
-#define TRACE_KILL_END()      ATRACE_INT(__FUNCTION__, 0);
+static inline void trace_kill_start(int pid, const char *desc) {
+    ATRACE_INT("kill_one_process", pid);
+    ATRACE_BEGIN(desc);
+}
+
+static inline void trace_kill_end() {
+    ATRACE_END();
+    ATRACE_INT("kill_one_process", 0);
+}
 
 #else /* LMKD_TRACE_KILLS */
 
-#define TRACE_KILL_START(pid) ((void)(pid))
-#define TRACE_KILL_END() ((void)0)
+static inline void trace_kill_start(int, const char *) {}
+static inline void trace_kill_end() {}
 
 #endif /* LMKD_TRACE_KILLS */
 
@@ -2132,6 +2139,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     int64_t rss_kb;
     int64_t swap_kb;
     char buf[PAGE_SIZE];
+    char desc[LINE_MAX];
 
     if (!read_proc_status(pid, buf, sizeof(buf))) {
         goto out;
@@ -2160,7 +2168,9 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
 
     mem_st = stats_read_memory_stat(per_app_memcg, pid, uid, rss_kb * 1024, swap_kb * 1024);
 
-    TRACE_KILL_START(pid);
+    snprintf(desc, sizeof(desc), "lmk,%d,%d,%d,%d,%d", pid, (int)ki->kill_reason, procp->oomadj,
+             min_oom_score, ki->max_thrashing);
+    trace_kill_start(pid, desc);
 
     /* CAP_KILL required */
     if (pidfd < 0) {
@@ -2171,7 +2181,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         r = pidfd_send_signal(pidfd, SIGKILL, NULL, 0);
     }
 
-    TRACE_KILL_END();
+    trace_kill_end();
 
     if (r) {
         stop_wait_for_proc_kill(false);
