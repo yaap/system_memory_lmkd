@@ -2168,8 +2168,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
 
     mem_st = stats_read_memory_stat(per_app_memcg, pid, uid, rss_kb * 1024, swap_kb * 1024);
 
-    snprintf(desc, sizeof(desc), "lmk,%d,%d,%d,%d,%d", pid, (int)ki->kill_reason, procp->oomadj,
-             min_oom_score, ki->max_thrashing);
+    snprintf(desc, sizeof(desc), "lmk,%d,%d,%d,%d,%d", pid, ki ? (int)ki->kill_reason : -1,
+             procp->oomadj, min_oom_score, ki ? ki->max_thrashing : -1);
     trace_kill_start(pid, desc);
 
     /* CAP_KILL required */
