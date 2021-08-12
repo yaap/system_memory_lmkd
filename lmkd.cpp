@@ -1929,8 +1929,15 @@ static void record_wakeup_time(struct timespec *tm, enum wakeup_reason reason,
     }
 }
 
+struct kill_info {
+    enum kill_reasons kill_reason;
+    const char *kill_desc;
+    int thrashing;
+    int max_thrashing;
+};
+
 static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
-                         int swap_kb, int kill_reason, union meminfo *mi,
+                         int swap_kb, struct kill_info *ki, union meminfo *mi,
                          struct wakeup_info *wi, struct timespec *tm) {
     /* log process information */
     android_log_write_int32(ctx, procp->pid);
@@ -1938,7 +1945,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, procp->oomadj);
     android_log_write_int32(ctx, min_oom_score);
     android_log_write_int32(ctx, (int32_t)min(rss_kb, INT32_MAX));
-    android_log_write_int32(ctx, kill_reason);
+    android_log_write_int32(ctx, ki ? ki->kill_reason : NONE);
 
     /* log meminfo fields */
     for (int field_idx = 0; field_idx < MI_FIELD_COUNT; field_idx++) {
@@ -1952,6 +1959,13 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, wi->skipped_wakeups);
     android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
     android_log_write_int32(ctx, (int32_t)mi->field.total_gpu_kb);
+    if (ki) {
+        android_log_write_int32(ctx, ki->thrashing);
+        android_log_write_int32(ctx, ki->max_thrashing);
+    } else {
+        android_log_write_int32(ctx, 0);
+        android_log_write_int32(ctx, 0);
+    }
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
     android_log_reset(ctx);
@@ -2117,13 +2131,6 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
     maxevents++;
 }
 
-struct kill_info {
-    enum kill_reasons kill_reason;
-    const char *kill_desc;
-    int thrashing;
-    int max_thrashing;
-};
-
 /* Kill one process specified by procp.  Returns the size (in pages) of the process killed */
 static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_info *ki,
                             union meminfo *mi, struct wakeup_info *wi, struct timespec *tm) {
@@ -2200,7 +2207,6 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         kill_st.kill_reason = ki->kill_reason;
         kill_st.thrashing = ki->thrashing;
         kill_st.max_thrashing = ki->max_thrashing;
-        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki->kill_reason, mi, wi, tm);
         ALOGI("Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
               "kB swap; reason: %s", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb,
               ki->kill_desc);
@@ -2208,10 +2214,10 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         kill_st.kill_reason = NONE;
         kill_st.thrashing = 0;
         kill_st.max_thrashing = 0;
-        killinfo_log(procp, min_oom_score, rss_kb, swap_kb, NONE, mi, wi, tm);
         ALOGI("Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
               "kb swap", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb);
     }
+    killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki, mi, wi, tm);
 
     kill_st.uid = static_cast<int32_t>(uid);
     kill_st.taskname = taskname;
