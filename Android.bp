@@ -15,6 +15,7 @@ cc_binary {
     srcs: [
         "lmkd.cpp",
         "reaper.cpp",
+        "watchdog.cpp",
     ],
     shared_libs: [
         "libcutils",
