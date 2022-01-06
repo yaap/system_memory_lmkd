@@ -34,6 +34,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <shared_mutex>
+
 #include <cutils/properties.h>
 #include <cutils/sockets.h>
 #include <liblmkd_utils.h>
@@ -46,6 +48,7 @@
 
 #include "reaper.h"
 #include "statslog.h"
+#include "watchdog.h"
 
 #define BPF_FD_JUST_USE_INT
 #include "BpfSyscallWrappers.h"
@@ -160,6 +163,8 @@ static inline void trace_kill_end() {}
 #define DEF_COMPLETE_STALL 700
 
 #define LMKD_REINIT_PROP "lmkd.reinit"
+
+#define WATCHDOG_TIMEOUT_SEC 2
 
 /* default to old in-kernel interface if no memory pressure events */
 static bool use_inkernel_interface = true;
@@ -523,6 +528,11 @@ static struct proc *pidhash[PIDHASH_SZ];
 
 #define ADJTOSLOT(adj) ((adj) + -OOM_SCORE_ADJ_MIN)
 #define ADJTOSLOT_COUNT (ADJTOSLOT(OOM_SCORE_ADJ_MAX) + 1)
+
+// protects procadjslot_list from concurrent access
+static std::shared_mutex adjslot_list_lock;
+// procadjslot_list should be modified only from the main thread while exclusively holding
+// adjslot_list_lock. Readers from non-main threads should hold adjslot_list_lock shared lock.
 static struct adjslot_list procadjslot_list[ADJTOSLOT_COUNT];
 
 #define MAX_DISTINCT_OOM_ADJ 32
@@ -912,13 +922,18 @@ static struct adjslot_list *adjslot_tail(struct adjslot_list *head) {
     return asl == head ? NULL : asl;
 }
 
+// Should be modified only from the main thread.
 static void proc_slot(struct proc *procp) {
     int adjslot = ADJTOSLOT(procp->oomadj);
+    std::scoped_lock lock(adjslot_list_lock);
 
     adjslot_insert(&procadjslot_list[adjslot], &procp->asl);
 }
 
+// Should be modified only from the main thread.
 static void proc_unslot(struct proc *procp) {
+    std::scoped_lock lock(adjslot_list_lock);
+
     adjslot_remove(&procp->asl);
 }
 
@@ -1955,16 +1970,24 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
 
     /* log meminfo fields */
     for (int field_idx = 0; field_idx < MI_FIELD_COUNT; field_idx++) {
-        android_log_write_int32(ctx, (int32_t)min(mi->arr[field_idx] * page_k, INT32_MAX));
+        android_log_write_int32(ctx, mi ? (int32_t)min(mi->arr[field_idx] * page_k, INT32_MAX): 0);
     }
 
     /* log lmkd wakeup information */
-    android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->last_event_tm, tm));
-    android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->prev_wakeup_tm, tm));
-    android_log_write_int32(ctx, wi->wakeups_since_event);
-    android_log_write_int32(ctx, wi->skipped_wakeups);
+    if (wi) {
+        android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->last_event_tm, tm));
+        android_log_write_int32(ctx, (int32_t)get_time_diff_ms(&wi->prev_wakeup_tm, tm));
+        android_log_write_int32(ctx, wi->wakeups_since_event);
+        android_log_write_int32(ctx, wi->skipped_wakeups);
+    } else {
+        android_log_write_int32(ctx, 0);
+        android_log_write_int32(ctx, 0);
+        android_log_write_int32(ctx, 0);
+        android_log_write_int32(ctx, 0);
+    }
+
     android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
-    android_log_write_int32(ctx, (int32_t)mi->field.total_gpu_kb);
+    android_log_write_int32(ctx, mi ? (int32_t)mi->field.total_gpu_kb : 0);
     if (ki) {
         android_log_write_int32(ctx, ki->thrashing);
         android_log_write_int32(ctx, ki->max_thrashing);
@@ -1977,10 +2000,33 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_reset(ctx);
 }
 
-static struct proc *proc_adj_lru(int oomadj) {
+// Note: returned entry is only an anchor and does not hold a valid process info.
+// When called from a non-main thread, adjslot_list_lock read lock should be taken.
+static struct proc *proc_adj_head(int oomadj) {
+    return (struct proc *)&procadjslot_list[ADJTOSLOT(oomadj)];
+}
+
+// When called from a non-main thread, adjslot_list_lock read lock should be taken.
+static struct proc *proc_adj_tail(int oomadj) {
     return (struct proc *)adjslot_tail(&procadjslot_list[ADJTOSLOT(oomadj)]);
 }
 
+// When called from a non-main thread, adjslot_list_lock read lock should be taken.
+static struct proc *proc_adj_prev(int oomadj, int pid) {
+    struct adjslot_list *head = &procadjslot_list[ADJTOSLOT(oomadj)];
+    struct adjslot_list *curr = adjslot_tail(&procadjslot_list[ADJTOSLOT(oomadj)]);
+
+    while (curr != head) {
+        if (((struct proc *)curr)->pid == pid) {
+            return (struct proc *)curr->prev;
+        }
+        curr = curr->prev;
+    }
+
+    return NULL;
+}
+
+// When called from a non-main thread, adjslot_list_lock read lock should be taken.
 static struct proc *proc_get_heaviest(int oomadj) {
     struct adjslot_list *head = &procadjslot_list[ADJTOSLOT(oomadj)];
     struct adjslot_list *curr = head->next;
@@ -2003,6 +2049,55 @@ static struct proc *proc_get_heaviest(int oomadj) {
     }
     return maxprocp;
 }
+
+static bool find_victim(int oom_score, int prev_pid, struct proc &target_proc) {
+    struct proc *procp;
+    std::shared_lock lock(adjslot_list_lock);
+
+    if (!prev_pid) {
+        procp = proc_adj_tail(oom_score);
+    } else {
+        procp = proc_adj_prev(oom_score, prev_pid);
+        if (!procp) {
+            // pid was removed, restart at the tail
+            procp = proc_adj_tail(oom_score);
+        }
+    }
+
+    // the list is empty at this oom_score or we looped through it
+    if (!procp || procp == proc_adj_head(oom_score)) {
+        return false;
+    }
+
+    // make a copy because original might be destroyed after adjslot_list_lock is released
+    target_proc = *procp;
+
+    return true;
+}
+
+static void watchdog_callback() {
+    int prev_pid = 0;
+
+    ALOGW("lmkd watchdog timed out!");
+    for (int oom_score = OOM_SCORE_ADJ_MAX; oom_score >= 0;) {
+        struct proc target;
+
+        if (!find_victim(oom_score, prev_pid, target)) {
+            oom_score--;
+            prev_pid = 0;
+            continue;
+        }
+
+        if (reaper.kill({ target.pidfd, target.pid }, true) == 0) {
+            ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
+            killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL);
+            break;
+        }
+        prev_pid = target.pid;
+    }
+}
+
+static Watchdog watchdog(WATCHDOG_TIMEOUT_SEC, watchdog_callback);
 
 static bool is_kill_pending(void) {
     char buf[24];
@@ -2165,7 +2260,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     trace_kill_start(pid, desc);
 
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
-    kill_result = reaper.kill({ pidfd, pid });
+    kill_result = reaper.kill({ pidfd, pid }, false);
 
     trace_kill_end();
 
@@ -2241,7 +2336,7 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
 
         while (true) {
             procp = choose_heaviest_task ?
-                proc_get_heaviest(i) : proc_adj_lru(i);
+                proc_get_heaviest(i) : proc_adj_tail(i);
 
             if (!procp)
                 break;
@@ -3297,6 +3392,7 @@ static void call_handler(struct event_handler_info* handler_info,
                          struct polling_params *poll_params, uint32_t events) {
     struct timespec curr_tm;
 
+    watchdog.start();
     poll_params->update = POLLING_DO_NOT_CHANGE;
     handler_info->handler(handler_info->data, events, poll_params);
     clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
@@ -3328,6 +3424,7 @@ static void call_handler(struct event_handler_info* handler_info,
         }
         break;
     }
+    watchdog.stop();
 }
 
 static void mainloop(void) {
@@ -3409,7 +3506,9 @@ static void mainloop(void) {
             if ((evt->events & EPOLLHUP) && evt->data.ptr) {
                 ALOGI("lmkd data connection dropped");
                 handler_info = (struct event_handler_info*)evt->data.ptr;
+                watchdog.start();
                 ctrl_data_close(handler_info->data);
+                watchdog.stop();
             }
         }
 
@@ -3548,6 +3647,10 @@ int main(int argc, char **argv) {
         if (init_reaper()) {
             ALOGI("Process reaper initialized with %d threads in the pool",
                 reaper.thread_cnt());
+        }
+
+        if (!watchdog.init()) {
+            ALOGE("Failed to initialize the watchdog");
         }
 
         mainloop();
