@@ -12,7 +12,10 @@ cc_defaults {
 cc_binary {
     name: "lmkd",
 
-    srcs: ["lmkd.cpp"],
+    srcs: [
+        "lmkd.cpp",
+        "reaper.cpp",
+    ],
     shared_libs: [
         "libcutils",
         "liblog",
