@@ -51,7 +51,7 @@ public:
     bool debug_enabled() const { return debug_enabled_; }
 
     // return 0 on success or error code returned by the syscall
-    int kill(const struct target_proc& target);
+    int kill(const struct target_proc& target, bool synchronous);
     // below members are used only by reaper_main
     target_proc dequeue_request();
     void request_complete();

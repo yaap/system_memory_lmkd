@@ -206,18 +206,23 @@ bool Reaper::async_kill(const struct target_proc& target) {
     return true;
 }
 
-int Reaper::kill(const struct target_proc& target) {
+int Reaper::kill(const struct target_proc& target, bool synchronous) {
     /* CAP_KILL required */
     if (target.pidfd < 0) {
         return ::kill(target.pid, SIGKILL);
     }
 
-    if (async_kill(target)) {
+    if (!synchronous && async_kill(target)) {
         // we assume the kill will be successful and if it fails we will be notified
         return 0;
     }
 
-    return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
+    int result = pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
+    if (result) {
+        return result;
+    }
+
+    return is_reaping_supported() ? process_mrelease(target.pidfd, 0) : 0;
 }
 
 Reaper::target_proc Reaper::dequeue_request() {
