@@ -25,6 +25,7 @@ public:
     struct target_proc {
         int pidfd;
         int pid;
+        uid_t uid;
     };
 private:
     // mutex_ and cond_ are used to wakeup the reaper thread.

@@ -2088,7 +2088,7 @@ static void watchdog_callback() {
             continue;
         }
 
-        if (reaper.kill({ target.pidfd, target.pid }, true) == 0) {
+        if (reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
             killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL);
             break;
@@ -2260,7 +2260,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     trace_kill_start(pid, desc);
 
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
-    kill_result = reaper.kill({ pidfd, pid }, false);
+    kill_result = reaper.kill({ pidfd, pid, uid }, false);
 
     trace_kill_end();
 
