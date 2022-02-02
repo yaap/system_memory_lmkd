@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <shared_mutex>
 
 #include <cutils/properties.h>
@@ -104,7 +105,6 @@ static inline void trace_kill_end() {}
 #define INKERNEL_MINFREE_PATH "/sys/module/lowmemorykiller/parameters/minfree"
 #define INKERNEL_ADJ_PATH "/sys/module/lowmemorykiller/parameters/adj"
 
-#define ARRAY_SIZE(x)   (sizeof(x) / sizeof(*(x)))
 #define EIGHT_MEGA (1 << 23)
 
 #define TARGET_UPDATE_MIN_INTERVAL_MS 1000
@@ -287,8 +287,8 @@ static int maxevents;
 #define OOM_SCORE_ADJ_MIN       (-1000)
 #define OOM_SCORE_ADJ_MAX       1000
 
-static int lowmem_adj[MAX_TARGETS];
-static int lowmem_minfree[MAX_TARGETS];
+static std::array<int, MAX_TARGETS> lowmem_adj;
+static std::array<int, MAX_TARGETS> lowmem_minfree;
 static int lowmem_targets_size;
 
 /* Fields to parse in /proc/zoneinfo */
@@ -1376,8 +1376,9 @@ static void cmd_target(int ntargets, LMKD_CTRL_PACKET packet) {
     static struct timespec last_req_tm;
     struct timespec curr_tm;
 
-    if (ntargets < 1 || ntargets > (int)ARRAY_SIZE(lowmem_adj))
+    if (ntargets < 1 || ntargets > (int)lowmem_adj.size()) {
         return;
+    }
 
     /*
      * Ratelimit minfree updates to once per TARGET_UPDATE_MIN_INTERVAL_MS
@@ -1469,8 +1470,9 @@ static void ctrl_command_handler(int dsock_idx) {
     switch(cmd) {
     case LMK_TARGET:
         targets = nargs / 2;
-        if (nargs & 0x1 || targets > (int)ARRAY_SIZE(lowmem_adj))
+        if (nargs & 0x1 || targets > (int)lowmem_adj.size()) {
             goto wronglen;
+        }
         cmd_target(targets, packet);
         break;
     case LMK_PROCPRIO:
