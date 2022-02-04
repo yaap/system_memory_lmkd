@@ -47,8 +47,8 @@ using namespace android::base;
 
 // Test constant parameters
 #define OOM_ADJ_MAX 1000
-#define ALLOC_STEP (ONE_MB)
-#define ALLOC_DELAY 1000
+#define ALLOC_STEP (5 * ONE_MB)
+#define ALLOC_DELAY 200
 
 // used to create ptr aliasing and prevent compiler optimizing the access
 static volatile void* gptr;
