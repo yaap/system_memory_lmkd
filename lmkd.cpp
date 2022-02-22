@@ -1947,6 +1947,22 @@ static int psi_parse_mem(struct psi_data *psi_data) {
     return psi_parse(&file_data, psi_data->mem_stats, true);
 }
 
+static int psi_parse_io(struct psi_data *psi_data) {
+    static struct reread_data file_data = {
+        .filename = PSI_PATH_IO,
+        .fd = -1,
+    };
+    return psi_parse(&file_data, psi_data->io_stats, true);
+}
+
+static int psi_parse_cpu(struct psi_data *psi_data) {
+    static struct reread_data file_data = {
+        .filename = PSI_PATH_CPU,
+        .fd = -1,
+    };
+    return psi_parse(&file_data, psi_data->cpu_stats, false);
+}
+
 enum wakeup_reason {
     Event,
     Polling
@@ -1991,7 +2007,7 @@ struct kill_info {
 
 static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
                          int swap_kb, struct kill_info *ki, union meminfo *mi,
-                         struct wakeup_info *wi, struct timespec *tm) {
+                         struct wakeup_info *wi, struct timespec *tm, struct psi_data *pd) {
     /* log process information */
     android_log_write_int32(ctx, procp->pid);
     android_log_write_int32(ctx, procp->uid);
@@ -2026,6 +2042,18 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     } else {
         android_log_write_int32(ctx, 0);
         android_log_write_int32(ctx, 0);
+    }
+
+    if (pd) {
+        android_log_write_float32(ctx, pd->mem_stats[PSI_SOME].avg10);
+        android_log_write_float32(ctx, pd->mem_stats[PSI_FULL].avg10);
+        android_log_write_float32(ctx, pd->io_stats[PSI_SOME].avg10);
+        android_log_write_float32(ctx, pd->io_stats[PSI_FULL].avg10);
+        android_log_write_float32(ctx, pd->cpu_stats[PSI_SOME].avg10);
+    } else {
+        for (int i = 0; i < 5; i++) {
+            android_log_write_float32(ctx, 0);
+        }
     }
 
     android_log_write_list(ctx, LOG_ID_EVENTS);
@@ -2122,7 +2150,7 @@ static void watchdog_callback() {
 
         if (reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
-            killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL);
+            killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
             break;
         }
         prev_pid = target.pid;
@@ -2244,7 +2272,8 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
 
 /* Kill one process specified by procp.  Returns the size (in pages) of the process killed */
 static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_info *ki,
-                            union meminfo *mi, struct wakeup_info *wi, struct timespec *tm) {
+                            union meminfo *mi, struct wakeup_info *wi, struct timespec *tm,
+                            struct psi_data *pd) {
     int pid = procp->pid;
     int pidfd = procp->pidfd;
     uid_t uid = procp->uid;
@@ -2321,7 +2350,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         ALOGI("Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
               "kb swap", taskname, pid, uid, procp->oomadj, rss_kb, swap_kb);
     }
-    killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki, mi, wi, tm);
+    killinfo_log(procp, min_oom_score, rss_kb, swap_kb, ki, mi, wi, tm, pd);
 
     kill_st.uid = static_cast<int32_t>(uid);
     kill_st.taskname = taskname;
@@ -2349,7 +2378,8 @@ out:
  * Returns size of the killed process.
  */
 static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union meminfo *mi,
-                                 struct wakeup_info *wi, struct timespec *tm) {
+                                 struct wakeup_info *wi, struct timespec *tm,
+                                 struct psi_data *pd) {
     int i;
     int killed_size = 0;
     bool lmk_state_change_start = false;
@@ -2373,7 +2403,7 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
             if (!procp)
                 break;
 
-            killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm);
+            killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm, pd);
             if (killed_size >= 0) {
                 if (!lmk_state_change_start) {
                     lmk_state_change_start = true;
@@ -2786,7 +2816,9 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         if (critical_stall) {
             min_score_adj = 0;
         }
-        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm);
+        psi_parse_io(&psi_data);
+        psi_parse_cpu(&psi_data);
+        int pages_freed = find_and_kill_process(min_score_adj, &ki, &mi, &wi, &curr_tm, &psi_data);
         if (pages_freed > 0) {
             killing = true;
             max_thrashing = 0;
@@ -3006,7 +3038,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device) {
         /* For Go devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm) == 0) {
+        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0) {
             if (debug_process_killing) {
                 ALOGI("Nothing to kill");
             }
@@ -3029,7 +3061,7 @@ do_kill:
             min_score_adj = level_oomadj[level];
         }
 
-        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm);
+        pages_freed = find_and_kill_process(min_score_adj, NULL, &mi, &wi, &curr_tm, NULL);
 
         if (pages_freed == 0) {
             /* Rate limit kill reports when nothing was reclaimed */
