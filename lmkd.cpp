@@ -34,6 +34,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <shared_mutex>
 
 #include <cutils/properties.h>
@@ -139,9 +140,6 @@ static inline void trace_kill_end() {}
 #define PSI_POLL_PERIOD_SHORT_MS 10
 /* Polling period after PSI signal when pressure is low */
 #define PSI_POLL_PERIOD_LONG_MS 100
-
-#define min(a, b) (((a) < (b)) ? (a) : (b))
-#define max(a, b) (((a) > (b)) ? (a) : (b))
 
 #define FAIL_REPORT_RLIMIT_MS 1000
 
@@ -556,7 +554,7 @@ static bool init_monitors();
 static void destroy_monitors();
 
 static int clamp(int low, int high, int value) {
-    return max(min(value, high), low);
+    return std::max(std::min(value, high), low);
 }
 
 static bool parse_int64(const char* str, int64_t* ret) {
@@ -2013,12 +2011,13 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, procp->uid);
     android_log_write_int32(ctx, procp->oomadj);
     android_log_write_int32(ctx, min_oom_score);
-    android_log_write_int32(ctx, (int32_t)min(rss_kb, INT32_MAX));
+    android_log_write_int32(ctx, std::min(rss_kb, (int)INT32_MAX));
     android_log_write_int32(ctx, ki ? ki->kill_reason : NONE);
 
     /* log meminfo fields */
     for (int field_idx = 0; field_idx < MI_FIELD_COUNT; field_idx++) {
-        android_log_write_int32(ctx, mi ? (int32_t)min(mi->arr[field_idx] * page_k, INT32_MAX): 0);
+        android_log_write_int32(ctx,
+                                mi ? std::min(mi->arr[field_idx] * page_k, (int64_t)INT32_MAX) : 0);
     }
 
     /* log lmkd wakeup information */
@@ -2034,7 +2033,7 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
         android_log_write_int32(ctx, 0);
     }
 
-    android_log_write_int32(ctx, (int32_t)min(swap_kb, INT32_MAX));
+    android_log_write_int32(ctx, std::min(swap_kb, (int)INT32_MAX));
     android_log_write_int32(ctx, mi ? (int32_t)mi->field.total_gpu_kb : 0);
     if (ki) {
         android_log_write_int32(ctx, ki->thrashing);
@@ -3667,12 +3666,13 @@ static void update_props() {
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = GET_LMK_PROPERTY(int32, "psi_complete_stall_ms",
         DEF_COMPLETE_STALL);
-    thrashing_limit_pct = max(0, GET_LMK_PROPERTY(int32, "thrashing_limit",
-        low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
+    thrashing_limit_pct =
+            std::max(0, GET_LMK_PROPERTY(int32, "thrashing_limit",
+                                         low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
     thrashing_limit_decay_pct = clamp(0, 100, GET_LMK_PROPERTY(int32, "thrashing_limit_decay",
         low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
-    thrashing_critical_pct = max(0, GET_LMK_PROPERTY(int32, "thrashing_limit_critical",
-        thrashing_limit_pct * 2));
+    thrashing_critical_pct = std::max(
+            0, GET_LMK_PROPERTY(int32, "thrashing_limit_critical", thrashing_limit_pct * 2));
     swap_util_max = clamp(0, 100, GET_LMK_PROPERTY(int32, "swap_util_max", 100));
     filecache_min_kb = GET_LMK_PROPERTY(int64, "filecache_min_kb", 0);
     stall_limit_critical = GET_LMK_PROPERTY(int64, "stall_limit_critical", 100);
