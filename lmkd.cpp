@@ -835,7 +835,7 @@ static void poll_kernel(int poll_fd) {
 
     while (1) {
         char rd_buf[256];
-        int bytes_read = TEMP_FAILURE_RETRY(pread(poll_fd, (void*)rd_buf, sizeof(rd_buf), 0));
+        int bytes_read = TEMP_FAILURE_RETRY(pread(poll_fd, (void*)rd_buf, sizeof(rd_buf) - 1, 0));
         if (bytes_read <= 0) break;
         rd_buf[bytes_read] = '\0';
 
