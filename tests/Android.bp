@@ -23,6 +23,7 @@ cc_test {
         "libbase",
         "liblog",
         "libcutils",
+        "libprocessgroup",
     ],
 
     static_libs: [
@@ -53,6 +54,7 @@ cc_test {
         "libbase",
         "liblog",
         "libcutils",
+        "libprocessgroup",
     ],
 
     static_libs: [
