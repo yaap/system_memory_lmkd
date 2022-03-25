@@ -55,6 +55,7 @@ cc_library_static {
     defaults: ["stats_defaults"],
     shared_libs: [
         "liblog",
+        "libprocessgroup",
     ],
 }
 
