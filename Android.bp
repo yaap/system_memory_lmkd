@@ -55,6 +55,7 @@ cc_library_static {
     defaults: ["stats_defaults"],
     shared_libs: [
         "liblog",
+        "libprocessgroup",
     ],
 }
 
@@ -64,6 +65,7 @@ cc_library_static {
     recovery_available: true,
     shared_libs: [
         "libcutils",
+        "libprocessgroup",
     ],
     export_include_dirs: ["include"],
     cppflags: [
