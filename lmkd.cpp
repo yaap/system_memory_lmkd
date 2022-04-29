@@ -3239,7 +3239,7 @@ static bool init_mp_common(enum vmpressure_level level) {
         goto err_open_mpfd;
     }
 
-    evctlfd = open(GetCgroupAttributePath("CgroupEventControl").c_str(), O_WRONLY | O_CLOEXEC);
+    evctlfd = open(GetCgroupAttributePath("MemCgroupEventControl").c_str(), O_WRONLY | O_CLOEXEC);
     if (evctlfd < 0) {
         ALOGI("No kernel memory cgroup event control (errno=%d)", errno);
         goto err_open_evctlfd;
