@@ -2327,7 +2327,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
              procp->oomadj, min_oom_score, ki ? ki->max_thrashing : -1);
 
     result = lmkd_free_memory_before_kill_hook(procp, rss_kb / page_k, min_oom_score,
-                                               ki->kill_reason);
+                                               ki ? (int)ki->kill_reason : -1);
     if (result > 0) {
       /*
        * Memory was freed elsewhere; no need to kill. Note: intentionally do not
