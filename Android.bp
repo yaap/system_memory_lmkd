@@ -2,6 +2,32 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+soong_config_module_type {
+    name: "lmkd_hooks_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "lmkd",
+    bool_variables: ["use_hooks"],
+    properties: [
+        "cflags",
+        "static_libs",
+    ],
+}
+
+lmkd_hooks_cc_defaults {
+    name: "lmkd_hooks_defaults",
+
+    soong_config_variables: {
+        use_hooks: {
+            cflags: [
+                "-DLMKD_USE_HOOKS"
+            ],
+            static_libs: [
+                "liblmkdhooks"
+            ]
+        }
+    }
+}
+
 cc_defaults {
     name: "stats_defaults",
     cflags: [
@@ -12,7 +38,11 @@ cc_defaults {
 cc_binary {
     name: "lmkd",
 
-    srcs: ["lmkd.cpp"],
+    srcs: [
+        "lmkd.cpp",
+        "reaper.cpp",
+        "watchdog.cpp",
+    ],
     shared_libs: [
         "libcutils",
         "liblog",
@@ -34,7 +64,7 @@ cc_binary {
         "-DLMKD_TRACE_KILLS"
     ],
     init_rc: ["lmkd.rc"],
-    defaults: ["stats_defaults"],
+    defaults: ["stats_defaults", "lmkd_hooks_defaults"],
     logtags: ["event.logtags"],
 }
 
@@ -50,6 +80,7 @@ cc_library_static {
     defaults: ["stats_defaults"],
     shared_libs: [
         "liblog",
+        "libprocessgroup",
     ],
 }
 
@@ -59,6 +90,7 @@ cc_library_static {
     recovery_available: true,
     shared_libs: [
         "libcutils",
+        "libprocessgroup",
     ],
     export_include_dirs: ["include"],
     cppflags: [
