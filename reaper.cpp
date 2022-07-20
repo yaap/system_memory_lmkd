@@ -133,7 +133,7 @@ bool Reaper::init(int comm_fd) {
         }
         // set normal scheduling policy for the reaper thread
         if (pthread_setschedparam(thread_pool_[thread_cnt_], SCHED_OTHER, &param)) {
-            ALOGW("set SCHED_FIFO failed %s", strerror(errno));
+            ALOGW("set SCHED_OTHER failed %s", strerror(errno));
         }
         snprintf(name, sizeof(name), "lmkd_reaper%d", thread_cnt_);
         if (pthread_setname_np(thread_pool_[thread_cnt_], name)) {
