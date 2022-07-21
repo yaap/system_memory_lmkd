@@ -1828,7 +1828,7 @@ static bool meminfo_parse_line(char *line, union meminfo *mi) {
 
 static int64_t read_gpu_total_kb() {
     static int fd = android::bpf::bpfFdGet(
-            "/sys/fs/bpf/map_gpu_mem_gpu_mem_total_map", BPF_F_RDONLY);
+            "/sys/fs/bpf/map_gpuMem_gpu_mem_total_map", BPF_F_RDONLY);
     static constexpr uint64_t kBpfKeyGpuTotalUsage = 0;
     uint64_t value;
 
