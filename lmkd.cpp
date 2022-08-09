@@ -66,19 +66,17 @@
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #include <cutils/trace.h>
 
-static inline void trace_kill_start(int pid, const char *desc) {
-    ATRACE_INT("kill_one_process", pid);
+static inline void trace_kill_start(const char *desc) {
     ATRACE_BEGIN(desc);
 }
 
 static inline void trace_kill_end() {
     ATRACE_END();
-    ATRACE_INT("kill_one_process", 0);
 }
 
 #else /* LMKD_TRACE_KILLS */
 
-static inline void trace_kill_start(int, const char *) {}
+static inline void trace_kill_start(const char *) {}
 static inline void trace_kill_end() {}
 
 #endif /* LMKD_TRACE_KILLS */
@@ -2337,7 +2335,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
       return result;
     }
 
-    trace_kill_start(pid, desc);
+    trace_kill_start(desc);
 
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
     kill_result = reaper.kill({ pidfd, pid, uid }, false);
