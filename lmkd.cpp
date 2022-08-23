@@ -2157,6 +2157,8 @@ static void watchdog_callback() {
         if (reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
             killinfo_log(&target, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
+            // WARNING: do not use target after pid_remove()
+            pid_remove(target.pid);
             break;
         }
         prev_pid = target.pid;
