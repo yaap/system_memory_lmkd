@@ -2348,7 +2348,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     snprintf(desc, sizeof(desc), "lmk,%d,%d,%d,%d,%d", pid, ki ? (int)ki->kill_reason : -1,
              procp->oomadj, min_oom_score, ki ? ki->max_thrashing : -1);
 
-    result = lmkd_free_memory_before_kill_hook(procp, rss_kb / page_k, min_oom_score,
+    result = lmkd_free_memory_before_kill_hook(procp, rss_kb / page_k, procp->oomadj,
                                                ki ? (int)ki->kill_reason : -1);
     if (result > 0) {
       /*
