@@ -336,16 +336,4 @@ size_t lmkd_pack_set_kill_occurred(LMK_KILL_OCCURRED_PACKET packet,
     return index;
 }
 
-size_t lmkd_pack_set_state_changed(LMKD_CTRL_PACKET packet,
-                                   enum lmk_state state) {
-    if (!enable_stats_log) {
-        return 0;
-    }
-
-    packet[0] = htonl(LMK_STAT_STATE_CHANGED);
-    packet[1] = htonl(state);
-
-    return 2 * sizeof(int);
-}
-
 #endif /* LMKD_LOG_STATS */

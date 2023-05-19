@@ -36,7 +36,6 @@ enum lmk_cmd {
     LMK_PROCKILL,           /* Unsolicited msg to subscribed clients on proc kills */
     LMK_UPDATE_PROPS,       /* Reinit properties */
     LMK_STAT_KILL_OCCURRED, /* Unsolicited msg to subscribed clients on proc kills for statsd log */
-    LMK_STAT_STATE_CHANGED, /* Unsolicited msg to subscribed clients on state changed */
 };
 
 /*
