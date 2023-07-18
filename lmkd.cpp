@@ -465,6 +465,7 @@ enum vmstat_field {
     VS_PGSCAN_KSWAPD,
     VS_PGSCAN_DIRECT,
     VS_PGSCAN_DIRECT_THROTTLE,
+    VS_PGREFILL,
     VS_FIELD_COUNT
 };
 
@@ -477,6 +478,7 @@ static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "pgscan_kswapd",
     "pgscan_direct",
     "pgscan_direct_throttle",
+    "pgrefill",
 };
 
 union vmstat {
@@ -489,6 +491,7 @@ union vmstat {
         int64_t pgscan_kswapd;
         int64_t pgscan_direct;
         int64_t pgscan_direct_throttle;
+        int64_t pgrefill;
     } field;
     int64_t arr[VS_FIELD_COUNT];
 };
@@ -2591,6 +2594,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static int64_t base_file_lru;
     static int64_t init_pgscan_kswapd;
     static int64_t init_pgscan_direct;
+    static int64_t init_pgrefill;
     static bool killing;
     static int thrashing_limit = thrashing_limit_pct;
     static struct zone_watermarks watermarks;
@@ -2676,9 +2680,14 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     if (vs.field.pgscan_direct != init_pgscan_direct) {
         init_pgscan_direct = vs.field.pgscan_direct;
         init_pgscan_kswapd = vs.field.pgscan_kswapd;
+        init_pgrefill = vs.field.pgrefill;
         reclaim = DIRECT_RECLAIM;
     } else if (vs.field.pgscan_kswapd != init_pgscan_kswapd) {
         init_pgscan_kswapd = vs.field.pgscan_kswapd;
+        init_pgrefill = vs.field.pgrefill;
+        reclaim = KSWAPD_RECLAIM;
+    } else if (vs.field.pgrefill != init_pgrefill) {
+        init_pgrefill = vs.field.pgrefill;
         reclaim = KSWAPD_RECLAIM;
     } else if (workingset_refault_file == prev_workingset_refault) {
         /*
