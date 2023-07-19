@@ -36,6 +36,7 @@ enum lmk_cmd {
     LMK_PROCKILL,           /* Unsolicited msg to subscribed clients on proc kills */
     LMK_UPDATE_PROPS,       /* Reinit properties */
     LMK_STAT_KILL_OCCURRED, /* Unsolicited msg to subscribed clients on proc kills for statsd log */
+    LMK_START_MONITORING,   /* Start psi monitoring if it was skipped earlier */
 };
 
 /*
@@ -253,6 +254,15 @@ static inline size_t lmkd_pack_set_prockills(LMKD_CTRL_PACKET packet, pid_t pid,
  */
 static inline size_t lmkd_pack_set_update_props(LMKD_CTRL_PACKET packet) {
     packet[0] = htonl(LMK_UPDATE_PROPS);
+    return sizeof(int);
+}
+
+/*
+ * Prepare LMK_START_MONITORING packet and return packet size in bytes.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline size_t lmkd_pack_start_monitoring(LMKD_CTRL_PACKET packet) {
+    packet[0] = htonl(LMK_START_MONITORING);
     return sizeof(int);
 }
 
