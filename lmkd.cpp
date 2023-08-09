@@ -91,7 +91,6 @@ static inline void trace_kill_end() {}
 #define PROC_STATUS_TGID_FIELD "Tgid:"
 #define PROC_STATUS_RSS_FIELD "VmRSS:"
 #define PROC_STATUS_SWAP_FIELD "VmSwap:"
-#define LINE_MAX 128
 
 #define PERCEPTIBLE_APP_ADJ 200
 
@@ -550,8 +549,8 @@ static uint16_t killcnt[MAX_DISTINCT_OOM_ADJ];
 static int killcnt_free_idx = 0;
 static uint32_t killcnt_total = 0;
 
-/* PAGE_SIZE / 1024 */
-static long page_k;
+static int pagesize;
+static long page_k; /* page size in kB */
 
 static bool update_props();
 static bool init_monitors();
@@ -627,7 +626,7 @@ static ssize_t read_all(int fd, char *buf, size_t max_len)
  */
 static char *reread_file(struct reread_data *data) {
     /* start with page-size buffer and increase if needed */
-    static ssize_t buf_size = PAGE_SIZE;
+    static ssize_t buf_size = pagesize;
     static char *new_buf, *buf = NULL;
     ssize_t size;
 
@@ -848,7 +847,7 @@ static void poll_kernel(int poll_fd) {
         if (fields_read == 10 && group_leader_pid == pid) {
             ctrl_data_write_lmk_kill_occurred((pid_t)pid, (uid_t)uid);
             mem_st.process_start_time_ns = starttime * (NS_PER_SEC / sysconf(_SC_CLK_TCK));
-            mem_st.rss_in_bytes = rss_in_pages * PAGE_SIZE;
+            mem_st.rss_in_bytes = rss_in_pages * pagesize;
 
             struct kill_stat kill_st = {
                 .uid = static_cast<int32_t>(uid),
@@ -1109,7 +1108,7 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     bool is_system_server;
     struct passwd *pwdrec;
     int64_t tgid;
-    char buf[PAGE_SIZE];
+    char buf[pagesize];
 
     lmkd_pack_get_procprio(packet, field_count, &params);
 
@@ -2322,7 +2321,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     int64_t tgid;
     int64_t rss_kb;
     int64_t swap_kb;
-    char buf[PAGE_SIZE];
+    char buf[pagesize];
     char desc[LINE_MAX];
 
     if (!procp->valid || !read_proc_status(pid, buf, sizeof(buf))) {
@@ -3456,10 +3455,9 @@ static int init(void) {
     int i;
     int ret;
 
-    page_k = sysconf(_SC_PAGESIZE);
-    if (page_k == -1)
-        page_k = PAGE_SIZE;
-    page_k /= 1024;
+    // Initialize page size
+    pagesize = getpagesize();
+    page_k = pagesize / 1024;
 
     epollfd = epoll_create(MAX_EPOLL_EVENTS);
     if (epollfd == -1) {
