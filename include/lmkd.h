@@ -51,6 +51,11 @@ enum lmk_cmd {
  */
 #define CTRL_PACKET_MAX_SIZE (sizeof(int) * (MAX_TARGETS * 2 + 1))
 
+/*
+ * Max number of characters in line.
+ */
+#define LINE_MAX 128
+
 /* LMKD packet - first int is lmk_cmd followed by payload */
 typedef int LMKD_CTRL_PACKET[CTRL_PACKET_MAX_SIZE / sizeof(int)];
 
