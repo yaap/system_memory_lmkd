@@ -32,6 +32,7 @@
 
 #include <string>
 
+#include <lmkd.h>
 #include <processgroup/processgroup.h>
 
 #ifdef LMKD_LOG_STATS
@@ -67,7 +68,7 @@ static struct proc* pid_lookup(int pid) {
     return procp;
 }
 
-static void memory_stat_parse_line(char* line, struct memory_stat* mem_st) {
+static void memory_stat_parse_line(const char* line, struct memory_stat* mem_st) {
     char key[MAX_TASKNAME_LEN + 1];
     int64_t value;
 
@@ -102,8 +103,8 @@ static int memory_stat_from_cgroup(struct memory_stat* mem_st, int pid, uid_t ui
         return -1;
     }
 
-    char buf[PAGE_SIZE];
-    while (fgets(buf, PAGE_SIZE, fp) != NULL) {
+    char buf[LINE_MAX];
+    while (fgets(buf, LINE_MAX, fp) != NULL) {
         memory_stat_parse_line(buf, mem_st);
     }
     fclose(fp);
