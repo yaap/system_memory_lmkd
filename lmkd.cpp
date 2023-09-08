@@ -88,6 +88,7 @@ static inline void trace_kill_end() {}
 #define ZONEINFO_PATH "/proc/zoneinfo"
 #define MEMINFO_PATH "/proc/meminfo"
 #define VMSTAT_PATH "/proc/vmstat"
+#define LRUGEN_STATUS_PATH "/sys/kernel/mm/lru_gen/enabled"
 #define PROC_STATUS_TGID_FIELD "Tgid:"
 #define PROC_STATUS_RSS_FIELD "VmRSS:"
 #define PROC_STATUS_SWAP_FIELD "VmSwap:"
@@ -228,6 +229,7 @@ static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
 static android_log_context ctx;
 static Reaper reaper;
 static int reaper_comm_fd[2];
+static bool MGLRU_status;
 
 enum polling_update {
     POLLING_DO_NOT_CHANGE,
@@ -367,7 +369,6 @@ union zoneinfo_node_fields {
 
 struct zoneinfo_node {
     int id;
-    int zone_count;
     struct zoneinfo_zone zones[MAX_NR_ZONES];
     union zoneinfo_node_fields fields;
 };
@@ -469,8 +470,17 @@ enum vmstat_field {
     VS_PGSCAN_DIRECT,
     VS_PGSCAN_DIRECT_THROTTLE,
     VS_PGREFILL,
+    VS_PGSKIP_FIRST_ZONE,
+    VS_PGSKIP_DMA = VS_PGSKIP_FIRST_ZONE,
+    VS_PGSKIP_DMA32,
+    VS_PGSKIP_NORMAL,
+    VS_PGSKIP_HIGH,
+    VS_PGSKIP_MOVABLE,
+    VS_PGSKIP_LAST_ZONE = VS_PGSKIP_MOVABLE,
     VS_FIELD_COUNT
 };
+
+#define PGSKIP_IDX(x) (x - VS_PGSKIP_FIRST_ZONE)
 
 static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "nr_free_pages",
@@ -482,6 +492,11 @@ static const char* const vmstat_field_names[VS_FIELD_COUNT] = {
     "pgscan_direct",
     "pgscan_direct_throttle",
     "pgrefill",
+    "pgskip_dma",
+    "pgskip_dma32",
+    "pgskip_normal",
+    "pgskip_high",
+    "pgskip_movable",
 };
 
 union vmstat {
@@ -495,6 +510,11 @@ union vmstat {
         int64_t pgscan_direct;
         int64_t pgscan_direct_throttle;
         int64_t pgrefill;
+        int64_t pgskip_dma;
+        int64_t pgskip_dma32;
+        int64_t pgskip_normal;
+        int64_t pgskip_high;
+        int64_t pgskip_movable;
     } field;
     int64_t arr[VS_FIELD_COUNT];
 };
@@ -1657,6 +1677,22 @@ static void zoneinfo_parse_protection(char *buf, struct zoneinfo_zone *zone) {
     zone->max_protection = max;
 }
 
+static int zone_name_idx(char *zone_name) {
+    static const char *zone_names[MAX_NR_ZONES] =
+                          {"DMA", "DMA32", "Normal", "High", "Movable", "Device"};
+    int i;
+
+    for (i = 0; i < MAX_NR_ZONES; i++) {
+        size_t len;
+        if ((len = strlen(zone_names[i])) == strlen(zone_name) &&
+            strncmp(zone_names[i], zone_name, len) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 static int zoneinfo_parse_zone(char **buf, struct zoneinfo_zone *zone) {
     for (char *line = strtok_r(NULL, "\n", buf); line;
          line = strtok_r(NULL, "\n", buf)) {
@@ -1759,6 +1795,7 @@ static int zoneinfo_parse(struct zoneinfo *zi) {
     struct zoneinfo_node *node = NULL;
     int node_idx = 0;
     int zone_idx = 0;
+    int pnode_ret = -1;
 
     memset(zi, 0, sizeof(struct zoneinfo));
 
@@ -1773,7 +1810,6 @@ static int zoneinfo_parse(struct zoneinfo *zi) {
             if (!node || node->id != node_id || pnode_ret) {
                 /* new node is found */
                 if (node && node->id != node_id) {
-                    node->zone_count = zone_idx + 1;
                     node_idx++;
                     if (node_idx == MAX_NR_NODES) {
                         /* max node count exceeded */
@@ -1784,15 +1820,25 @@ static int zoneinfo_parse(struct zoneinfo *zi) {
                 node = &zi->nodes[node_idx];
                 node->id = node_id;
                 zone_idx = 0;
+
+                line = strtok_r(NULL, "\n", &save_ptr);
+                pnode_ret = strncmp(line, NODE_STATS_MARKER, strlen(NODE_STATS_MARKER));
+                if (pnode_ret) {
+                    /*
+                     * per-node stats are only present in the first non-empty zone of
+                     * the node.
+                     */
+                    continue;
+                }
+
                 if (!zoneinfo_parse_node(&save_ptr, node)) {
                     ALOGE("%s parse error", file_data.filename);
                     return -1;
                 }
-            } else {
-                /* new zone is found */
-                zone_idx++;
             }
-            if (!zoneinfo_parse_zone(&save_ptr, &node->zones[zone_idx])) {
+            zone_idx = zone_name_idx(zone_name);
+            if (zone_idx >= 0 &&
+                !zoneinfo_parse_zone(&save_ptr, &node->zones[zone_idx])) {
                 ALOGE("%s parse error", file_data.filename);
                 return -1;
             }
@@ -1802,13 +1848,12 @@ static int zoneinfo_parse(struct zoneinfo *zi) {
         ALOGE("%s parse error", file_data.filename);
         return -1;
     }
-    node->zone_count = zone_idx + 1;
     zi->node_count = node_idx + 1;
 
     /* calculate totals fields */
     for (node_idx = 0; node_idx < zi->node_count; node_idx++) {
         node = &zi->nodes[node_idx];
-        for (zone_idx = 0; zone_idx < node->zone_count; zone_idx++) {
+        for (zone_idx = 0; zone_idx < MAX_NR_ZONES; zone_idx++) {
             struct zoneinfo_zone *zone = &zi->nodes[node_idx].zones[zone_idx];
             zi->totalreserve_pages += zone->max_protection + zone->fields.field.high;
         }
@@ -2533,43 +2578,115 @@ struct zone_watermarks {
     long min_wmark;
 };
 
+struct zone_meminfo {
+    int64_t nr_free_pages;
+    int64_t cma_free;
+    struct zone_watermarks watermarks;
+    struct zone_watermarks total_watermarks;
+};
+
 /*
  * Returns lowest breached watermark or WMARK_NONE.
  */
-static enum zone_watermark get_lowest_watermark(union meminfo *mi,
-                                                struct zone_watermarks *watermarks)
+static enum zone_watermark get_lowest_watermark(struct zone_meminfo *zmi)
 {
-    int64_t nr_free_pages = mi->field.nr_free_pages - mi->field.cma_free;
+    int64_t nr_free_pages = zmi->nr_free_pages - zmi->cma_free;
 
-    if (nr_free_pages < watermarks->min_wmark) {
+    if (nr_free_pages < zmi->watermarks.min_wmark) {
         return WMARK_MIN;
     }
-    if (nr_free_pages < watermarks->low_wmark) {
+    if (nr_free_pages < zmi->watermarks.low_wmark) {
         return WMARK_LOW;
     }
-    if (nr_free_pages < watermarks->high_wmark) {
+    if (nr_free_pages < zmi->watermarks.high_wmark) {
         return WMARK_HIGH;
     }
     return WMARK_NONE;
 }
 
-void calc_zone_watermarks(struct zoneinfo *zi, struct zone_watermarks *watermarks) {
-    memset(watermarks, 0, sizeof(struct zone_watermarks));
+static void add_zone_watermarks(struct zone_watermarks *wmarks, struct zoneinfo_zone *zone) {
+    wmarks->high_wmark += zone->max_protection + zone->fields.field.high;
+    wmarks->low_wmark += zone->max_protection + zone->fields.field.low;
+    wmarks->min_wmark += zone->max_protection + zone->fields.field.min;
+}
+
+void calc_zone_meminfo(struct zoneinfo *zi, struct zone_meminfo *zmi, int64_t *pgskip_deltas) {
+    struct zone_watermarks *watermarks, *total_watermarks;
+
+    memset(zmi, 0, sizeof(struct zone_meminfo));
+    watermarks = &zmi->watermarks;
+    total_watermarks = &zmi->total_watermarks;
 
     for (int node_idx = 0; node_idx < zi->node_count; node_idx++) {
+        int i, pgskip_idx;
         struct zoneinfo_node *node = &zi->nodes[node_idx];
-        for (int zone_idx = 0; zone_idx < node->zone_count; zone_idx++) {
-            struct zoneinfo_zone *zone = &node->zones[zone_idx];
+        for (i = VS_PGSKIP_FIRST_ZONE, pgskip_idx = PGSKIP_IDX(i);
+             i <= VS_PGSKIP_LAST_ZONE; i++, pgskip_idx++) {
+            struct zoneinfo_zone *zone = &node->zones[pgskip_idx];
 
             if (!zone->fields.field.present) {
                 continue;
             }
 
-            watermarks->high_wmark += zone->max_protection + zone->fields.field.high;
-            watermarks->low_wmark += zone->max_protection + zone->fields.field.low;
-            watermarks->min_wmark += zone->max_protection + zone->fields.field.min;
+            add_zone_watermarks(total_watermarks, zone);
+
+            if (!pgskip_deltas[pgskip_idx]) {
+                zmi->nr_free_pages += zone->fields.field.nr_free_pages;
+                zmi->cma_free += zone->fields.field.nr_free_cma;
+                add_zone_watermarks(watermarks, zone);
+            }
         }
     }
+}
+
+static bool get_MGLRU_status() {
+    int fd;
+    char buf[pagesize];
+    ssize_t ret;
+
+    fd = open(LRUGEN_STATUS_PATH, O_RDONLY | O_CLOEXEC);
+    if (fd == -1) {
+        return -1;
+    }
+
+    ret = read_all(fd, buf, pagesize - 1);
+    close(fd);
+    if (ret < 0) {
+        return -1;
+    }
+    buf[ret] = '\0';
+
+    return strtol(buf, NULL, 16) > 0;
+}
+
+static bool calc_pgskip_deltas(union vmstat *vs, int64_t *pgskip_deltas)
+{
+    static int64_t init_pgskip[MAX_NR_ZONES];
+    unsigned int i, pgskip_idx;
+    bool pgskip_changed = false;
+
+    for (i = VS_PGSKIP_FIRST_ZONE, pgskip_idx = PGSKIP_IDX(i);
+         i <= VS_PGSKIP_LAST_ZONE; i++, pgskip_idx++) {
+       /*
+        * When MGLRU is enabled, don't set the pgskip delta for Normal zone.
+        * Because it could be because of page-isolation failure as well.
+        * In which case, we need to consider Normal Zone watermarks and
+        * free memory values for making kill decisions.
+        */
+        if (MGLRU_status && i == VS_PGSKIP_NORMAL) {
+            pgskip_deltas[pgskip_idx] = 0;
+            continue;
+        }
+
+        pgskip_deltas[pgskip_idx] = vs->arr[i] - init_pgskip[pgskip_idx];
+        init_pgskip[pgskip_idx] = vs->arr[i];
+
+        if (pgskip_deltas[pgskip_idx] > 0) {
+            pgskip_changed = true;
+        }
+    }
+
+    return pgskip_changed;
 }
 
 static int calc_swap_utilization(union meminfo *mi) {
@@ -2593,7 +2710,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static int64_t init_pgrefill;
     static bool killing;
     static int thrashing_limit = thrashing_limit_pct;
-    static struct zone_watermarks watermarks;
+    static struct zone_meminfo zmi;
     static struct timespec wmark_update_tm;
     static struct wakeup_info wi;
     static struct timespec thrashing_reset_tm;
@@ -2617,9 +2734,11 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     int min_score_adj = 0;
     int swap_util = 0;
     int64_t swap_low_threshold;
+    int64_t pgskip_deltas[MAX_NR_ZONES] = {0};
     long since_thrashing_reset_ms;
     int64_t workingset_refault_file;
     bool critical_stall = false;
+    bool pgskip_changed;
 
     if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0) {
         ALOGE("Failed to get current time");
@@ -2663,6 +2782,9 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         thrashing_reset_tm = curr_tm;
         prev_thrash_growth = 0;
     }
+
+    /* Determine the change in pgskip values for each zone */
+    pgskip_changed = calc_pgskip_deltas(&vs, pgskip_deltas);
 
     /* Check free swap levels */
     if (swap_free_low_percentage) {
@@ -2742,7 +2864,9 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
      * TODO: b/140521024 replace this periodic update with an API for AMS to notify LMKD
      * that zone watermarks were changed by the system software.
      */
-    if (watermarks.high_wmark == 0 || get_time_diff_ms(&wmark_update_tm, &curr_tm) > 60000) {
+    if (zmi.watermarks.high_wmark == 0 ||
+        get_time_diff_ms(&wmark_update_tm, &curr_tm) > 60000 ||
+        pgskip_changed) {
         struct zoneinfo zi;
 
         if (zoneinfo_parse(&zi) < 0) {
@@ -2750,12 +2874,16 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
             return;
         }
 
-        calc_zone_watermarks(&zi, &watermarks);
+        calc_zone_meminfo(&zi, &zmi, pgskip_deltas);
         wmark_update_tm = curr_tm;
+    } else {
+        zmi.nr_free_pages = mi.field.nr_free_pages;
+        zmi.cma_free = mi.field.cma_free;
+        zmi.watermarks = zmi.total_watermarks;
     }
 
     /* Find out which watermark is breached if any */
-    wmark = get_lowest_watermark(&mi, &watermarks);
+    wmark = get_lowest_watermark(&zmi);
 
     if (!psi_parse_mem(&psi_data)) {
         critical_stall = psi_data.mem_stats[PSI_FULL].avg10 > (float)stall_limit_critical;
@@ -3556,6 +3684,8 @@ static int init(void) {
         close(pidfd);
     }
     ALOGI("Process polling is %s", pidfd_supported ? "supported" : "not supported" );
+
+    MGLRU_status = get_MGLRU_status();
 
     if (!lmkd_init_hook()) {
         ALOGE("Failed to initialize LMKD hooks.");
