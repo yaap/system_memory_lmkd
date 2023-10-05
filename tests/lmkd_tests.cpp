@@ -211,10 +211,10 @@ TEST_F(LmkdTest, TargetReaping) {
     ASSERT_TRUE(ParseProcSize(line, rss, swap)) << "Kill report format is invalid";
 
     // find reap duration report
-    line_start = logcat_out.find(LMKD_REAP_LINE_START, line_end);
+    line_start = logcat_out.find(LMKD_REAP_LINE_START);
     if (line_start == std::string::npos) {
         // Target might have exited before reaping started
-        line_start = logcat_out.find(LMKD_REAP_MRELESE_ERR_MARKER, line_end);
+        line_start = logcat_out.find(LMKD_REAP_MRELESE_ERR_MARKER);
 
         ASSERT_TRUE(line_start != std::string::npos) << "Reaping time report is not found";
 
