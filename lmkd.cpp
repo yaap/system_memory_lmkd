@@ -2850,8 +2850,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
 
     /* Check if a cached app should be killed */
     if (kill_reason == NONE && wmark < WMARK_HIGH) {
-        /* TODO: introduce a new kill reason */
-        kill_reason = LOW_MEM_AND_SWAP;
+        kill_reason = LOW_MEM;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached",
             wmark < WMARK_LOW ? "min" : "low");
         min_score_adj = PREVIOUS_APP_ADJ + 1;
