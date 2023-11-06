@@ -3218,7 +3218,7 @@ static MemcgVersion __memcg_version() {
     if (!CgroupGetControllerPath("memory", &memcg_path)) {
         return MemcgVersion::kNotFound;
     }
-    return CgroupGetControllerPath(CGROUPV2_CONTROLLER_NAME, &cgroupv2_path) &&
+    return CgroupGetControllerPath(CGROUPV2_HIERARCHY_NAME, &cgroupv2_path) &&
                            cgroupv2_path == memcg_path
                    ? MemcgVersion::kV2
                    : MemcgVersion::kV1;
