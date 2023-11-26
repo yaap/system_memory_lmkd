@@ -64,6 +64,7 @@ enum kill_reasons {
     DIRECT_RECL_AND_THRASHING,
     LOW_MEM_AND_SWAP_UTIL,
     LOW_FILECACHE_AFTER_THRASHING,
+    LOW_MEM,
     KILL_REASON_COUNT
 };
 
@@ -83,26 +84,11 @@ struct kill_stat {
 /* LMKD reply packet to hold data for the LmkKillOccurred statsd atom */
 typedef char LMK_KILL_OCCURRED_PACKET[LMKD_REPLY_MAX_SIZE];
 
-// If you update this, also update the corresponding stats enum mapping.
-enum lmk_state {
-    STATE_UNKNOWN = 0,
-    STATE_START,
-    STATE_STOP,
-};
-
 #ifdef LMKD_LOG_STATS
 
 #define PROC_STAT_FILE_PATH "/proc/%d/stat"
 #define PROC_STAT_BUFFER_SIZE 1024
 #define BYTES_IN_KILOBYTE 1024
-
-/**
- * Produces packet with the change in LMKD state which is used as start/stop boundaries for logging
- * LMK_KILL_OCCURRED event.
- * Code: LMK_STATE_CHANGED = 54
- */
-size_t lmkd_pack_set_state_changed(LMKD_CTRL_PACKET packet,
-                                   enum lmk_state state);
 
 /**
  * Produces packet with the event when LMKD kills a process to reduce memory pressure.
@@ -136,11 +122,6 @@ void stats_remove_taskname(int pid);
 const char* stats_get_task_name(int pid);
 
 #else /* LMKD_LOG_STATS */
-
-static inline size_t
-lmkd_pack_set_state_changed(LMKD_CTRL_PACKET packet __unused, enum lmk_state state __unused) {
-    return -EINVAL;
-}
 
 static inline size_t
 lmkd_pack_set_kill_occurred(LMK_KILL_OCCURRED_PACKET packet __unused,

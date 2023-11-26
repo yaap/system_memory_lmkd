@@ -211,10 +211,10 @@ TEST_F(LmkdTest, TargetReaping) {
     ASSERT_TRUE(ParseProcSize(line, rss, swap)) << "Kill report format is invalid";
 
     // find reap duration report
-    line_start = logcat_out.find(LMKD_REAP_LINE_START, line_end);
+    line_start = logcat_out.find(LMKD_REAP_LINE_START);
     if (line_start == std::string::npos) {
         // Target might have exited before reaping started
-        line_start = logcat_out.find(LMKD_REAP_MRELESE_ERR_MARKER, line_end);
+        line_start = logcat_out.find(LMKD_REAP_MRELESE_ERR_MARKER);
 
         ASSERT_TRUE(line_start != std::string::npos) << "Reaping time report is not found";
 
@@ -228,12 +228,15 @@ TEST_F(LmkdTest, TargetReaping) {
     line = logcat_out.substr(
             line_start, line_end == std::string::npos ? std::string::npos : line_end - line_start);
     long reap_time;
-    ASSERT_TRUE(ParseReapTime(line, pid, reap_time) && reap_time > 0)
+    ASSERT_TRUE(ParseReapTime(line, pid, reap_time) && reap_time >= 0)
             << "Reaping time report format is invalid";
 
-    double reclaim_speed = ((double)rss + swap) / reap_time;
-    GTEST_LOG_(INFO) << "Reclaim speed " << reclaim_speed << "kB/ms (" << rss << "kB rss + " << swap
-                     << "kB swap) / " << reap_time << "ms";
+    // occasionally the reaping happens quickly enough that it's reported as 0ms
+    if (reap_time > 0) {
+        double reclaim_speed = ((double)rss + swap) / reap_time;
+        GTEST_LOG_(INFO) << "Reclaim speed " << reclaim_speed << "kB/ms (" << rss << "kB rss + "
+                         << swap << "kB swap) / " << reap_time << "ms";
+   }
 }
 
 int main(int argc, char** argv) {
