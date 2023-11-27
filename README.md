@@ -88,6 +88,10 @@ properties:
   - `ro.lmk.psi_complete_stall_ms`: complete PSI stall threshold in milliseconds for
                                  triggering critical memory notification. Default =
                                  700
+  - `ro.lmk.pressure_after_kill_min_score`: min oom_adj_score score threshold for
+                                 cycle after kill used to allow blocking of killing
+                                 critical processes when not enough memory was freed
+                                 in a kill cycle. Default score = 0.
 
 lmkd will set the following Android properties according to current system
 configurations:

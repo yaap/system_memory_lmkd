@@ -204,6 +204,7 @@ static int64_t downgrade_pressure;
 static bool low_ram_device;
 static bool kill_heaviest_task;
 static unsigned long kill_timeout_ms;
+static int pressure_after_kill_min_score;
 static bool use_minfree_levels;
 static bool per_app_memcg;
 static int swap_free_low_percentage;
@@ -2769,6 +2770,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
          * This might happen when a process is consuming memory faster than reclaim can
          * free even after a kill. Mostly happens when running memory stress tests.
          */
+        min_score_adj = pressure_after_kill_min_score;
         kill_reason = PRESSURE_AFTER_KILL;
         strncpy(kill_desc, "min watermark is breached even after kill", sizeof(kill_desc));
     } else if (level == VMPRESS_LEVEL_CRITICAL && events != 0) {
@@ -3771,6 +3773,8 @@ static bool update_props() {
     low_ram_device = property_get_bool("ro.config.low_ram", false);
     kill_timeout_ms =
         (unsigned long)GET_LMK_PROPERTY(int32, "kill_timeout_ms", 100);
+    pressure_after_kill_min_score =
+        (unsigned long)GET_LMK_PROPERTY(int32, "pressure_after_kill_min_score", 0);
     use_minfree_levels =
         GET_LMK_PROPERTY(bool, "use_minfree_levels", false);
     per_app_memcg =
