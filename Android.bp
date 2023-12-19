@@ -35,6 +35,26 @@ cc_defaults {
     ],
 }
 
+soong_config_module_type {
+    name: "custom_lmkd_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "YAAP_CUSTOM",
+    value_variables: ["ZRAM_AVG_COMP"],
+    properties: ["cppflags"],
+}
+
+custom_lmkd_cc_defaults {
+    name: "custom_lmkd_defaults",
+    soong_config_variables: {
+        ZRAM_AVG_COMP: {
+            cppflags: ["-DZRAM_AVG_COMP=%s"],
+	    conditions_default: {
+	        cppflags: ["-DZRAM_AVG_COMP=3"]
+            },
+        },
+    },
+}
+
 cc_binary {
     name: "lmkd",
 
@@ -64,7 +84,7 @@ cc_binary {
         "-DLMKD_TRACE_KILLS"
     ],
     init_rc: ["lmkd.rc"],
-    defaults: ["stats_defaults", "lmkd_hooks_defaults"],
+    defaults: ["stats_defaults", "lmkd_hooks_defaults", "custom_lmkd_defaults"],
     logtags: ["event.logtags"],
     afdo: true,
 }

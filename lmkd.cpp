@@ -1941,7 +1941,7 @@ static int meminfo_parse(union meminfo *mi) {
 // measure free swap because they represent how much swap space the system will consider to use
 // and how much it can actually use.
 static inline int64_t get_free_swap(union meminfo *mi) {
-    return std::min(mi->field.free_swap, mi->field.easy_available);
+    return std::min(mi->field.free_swap, mi->field.easy_available * ZRAM_AVG_COMP);
 }
 
 /* /proc/vmstat parsing routines */
