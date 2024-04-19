@@ -2035,24 +2035,24 @@ static int psi_parse(struct reread_data *file_data, struct psi_stats stats[], bo
 
 static int psi_parse_mem(struct psi_data *psi_data) {
     static struct reread_data file_data = {
-        .filename = PSI_PATH_MEMORY,
-        .fd = -1,
+            .filename = psi_resource_file[PSI_MEMORY],
+            .fd = -1,
     };
     return psi_parse(&file_data, psi_data->mem_stats, true);
 }
 
 static int psi_parse_io(struct psi_data *psi_data) {
     static struct reread_data file_data = {
-        .filename = PSI_PATH_IO,
-        .fd = -1,
+            .filename = psi_resource_file[PSI_IO],
+            .fd = -1,
     };
     return psi_parse(&file_data, psi_data->io_stats, true);
 }
 
 static int psi_parse_cpu(struct psi_data *psi_data) {
     static struct reread_data file_data = {
-        .filename = PSI_PATH_CPU,
-        .fd = -1,
+            .filename = psi_resource_file[PSI_CPU],
+            .fd = -1,
     };
     return psi_parse(&file_data, psi_data->cpu_stats, false);
 }

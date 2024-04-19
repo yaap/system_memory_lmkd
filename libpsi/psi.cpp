@@ -33,13 +33,18 @@ static const char* stall_type_name[] = {
         "full",
 };
 
-int init_psi_monitor(enum psi_stall_type stall_type,
-             int threshold_us, int window_us) {
+int init_psi_monitor(enum psi_stall_type stall_type, int threshold_us, int window_us,
+                     enum psi_resource resource) {
+    if (resource < PSI_MEMORY || resource >= PSI_RESOURCE_COUNT) {
+        ALOGE("Invalid psi resource type: %d", resource);
+        errno = EINVAL;
+        return -1;
+    }
     int fd;
     int res;
     char buf[256];
 
-    fd = TEMP_FAILURE_RETRY(open(PSI_PATH_MEMORY, O_WRONLY | O_CLOEXEC));
+    fd = TEMP_FAILURE_RETRY(open(psi_resource_file[resource], O_WRONLY | O_CLOEXEC));
     if (fd < 0) {
         ALOGE("No kernel psi monitor support (errno=%d)", errno);
         return -1;
@@ -58,16 +63,16 @@ int init_psi_monitor(enum psi_stall_type stall_type,
     }
 
     if (res >= (ssize_t)sizeof(buf)) {
-        ALOGE("%s line overflow for psi stall type '%s'",
-            PSI_PATH_MEMORY, stall_type_name[stall_type]);
+        ALOGE("%s line overflow for psi stall type '%s'", psi_resource_file[resource],
+              stall_type_name[stall_type]);
         errno = EINVAL;
         goto err;
     }
 
     res = TEMP_FAILURE_RETRY(write(fd, buf, strlen(buf) + 1));
     if (res < 0) {
-        ALOGE("%s write failed for psi stall type '%s'; errno=%d",
-            PSI_PATH_MEMORY, stall_type_name[stall_type], errno);
+        ALOGE("%s write failed for psi stall type '%s'; errno=%d", psi_resource_file[resource],
+              stall_type_name[stall_type], errno);
         goto err;
     }
 

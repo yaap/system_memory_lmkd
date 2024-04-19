@@ -22,9 +22,7 @@
 
 __BEGIN_DECLS
 
-#define PSI_PATH_MEMORY	"/proc/pressure/memory"
-#define PSI_PATH_IO	"/proc/pressure/io"
-#define PSI_PATH_CPU	"/proc/pressure/cpu"
+enum psi_resource { PSI_MEMORY, PSI_IO, PSI_CPU, PSI_RESOURCE_COUNT };
 
 enum psi_stall_type {
     PSI_SOME,
@@ -45,16 +43,22 @@ struct psi_data {
     struct psi_stats cpu_stats[PSI_TYPE_COUNT];
 };
 
+static const char* psi_resource_file[PSI_RESOURCE_COUNT] = {
+        "/proc/pressure/memory",
+        "/proc/pressure/io",
+        "/proc/pressure/cpu",
+};
+
 /*
- * Initializes psi monitor.
+ * Initializes psi monitor for the given psi resource type.
  * stall_type, threshold_us and window_us are monitor parameters
  * When successful, the function returns file descriptor that can
  * be used with poll/epoll syscalls to wait for EPOLLPRI events.
  * When unsuccessful, the function returns -1 and errno is set
  * appropriately.
  */
-int init_psi_monitor(enum psi_stall_type stall_type,
-        int threshold_us, int window_us);
+int init_psi_monitor(enum psi_stall_type stall_type, int threshold_us, int window_us,
+                     enum psi_resource resource = PSI_MEMORY);
 
 /*
  * Registers psi monitor file descriptor fd on the epoll instance
