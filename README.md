@@ -100,6 +100,12 @@ properties:
                                  to 0 will ignore available memory and assume that
                                  configured swap size can be always utilized fully.
                                  Default = 1 (no compression).
+  - `ro.lmk.lowmem_min_oom_score`: min oom_score_adj level used to select processes
+                                 to kill when memory is critically low. Setting it
+                                 to 1001 will prevent any kills for this reason. Min
+                                 acceptable value is 201 (apps up to perceptible).
+                                 Default = 701 (all cached apps excluding the last
+                                 active one).
 
 lmkd will set the following Android properties according to current system
 configurations:

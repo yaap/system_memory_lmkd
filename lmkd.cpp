@@ -164,6 +164,8 @@ static inline void trace_kill_end() {}
 #define DEF_DIRECT_RECL_THRESH_MS 0
 /* ro.lmk.swap_compression_ratio property defaults */
 #define DEF_SWAP_COMP_RATIO 1
+/* ro.lmk.lowmem_min_oom_score defaults */
+#define DEF_LOWMEM_MIN_SCORE (PREVIOUS_APP_ADJ + 1)
 
 #define LMKD_REINIT_PROP "lmkd.reinit"
 
@@ -235,6 +237,7 @@ static int kpoll_fd;
 static bool delay_monitors_until_boot;
 static int direct_reclaim_threshold_ms;
 static int swap_compression_ratio;
+static int lowmem_min_oom_score;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_SOME, 70 },    /* 70ms out of 1sec for partial stall */
     { PSI_SOME, 100 },   /* 100ms out of 1sec for partial stall */
@@ -2932,7 +2935,7 @@ update_watermarks:
         kill_reason = LOW_MEM;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached",
             wmark < WMARK_LOW ? "min" : "low");
-        min_score_adj = PREVIOUS_APP_ADJ + 1;
+        min_score_adj = lowmem_min_oom_score;
     }
 
     /* Kill a process if necessary */
@@ -4016,6 +4019,9 @@ static bool update_props() {
             GET_LMK_PROPERTY(int64, "direct_reclaim_threshold_ms", DEF_DIRECT_RECL_THRESH_MS);
     swap_compression_ratio =
             GET_LMK_PROPERTY(int64, "swap_compression_ratio", DEF_SWAP_COMP_RATIO);
+    lowmem_min_oom_score =
+            std::max(PERCEPTIBLE_APP_ADJ + 1,
+                     GET_LMK_PROPERTY(int32, "lowmem_min_oom_score", DEF_LOWMEM_MIN_SCORE));
 
     reaper.enable_debug(debug_process_killing);
 

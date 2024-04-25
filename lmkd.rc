@@ -58,3 +58,6 @@ on property:persist.device_config.lmkd_native.direct_reclaim_threshold_ms=*
 
 on property:persist.device_config.lmkd_native.swap_compression_ratio=*
     setprop lmkd.reinit ${sys.boot_completed:-0}
+
+on property:persist.device_config.lmkd_native.lowmem_min_oom_score=*
+    setprop lmkd.reinit ${sys.boot_completed:-0}
