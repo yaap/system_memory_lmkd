@@ -40,10 +40,12 @@
 #include <shared_mutex>
 #include <vector>
 
+#include <bpf/KernelUtils.h>
 #include <bpf/WaitForProgsLoaded.h>
 #include <cutils/properties.h>
 #include <cutils/sockets.h>
 #include <liblmkd_utils.h>
+#include <liburing.h>
 #include <lmkd.h>
 #include <lmkd_hooks.h>
 #include <log/log.h>
@@ -119,6 +121,8 @@ static inline void trace_kill_end() {}
 
 #define STRINGIFY(x) STRINGIFY_INTERNAL(x)
 #define STRINGIFY_INTERNAL(x) #x
+
+#define PROCFS_PATH_MAX 64
 
 /*
  * Read lmk property with persist.device_config.lmkd_native.<name> overriding ro.lmk.<name>
@@ -203,6 +207,11 @@ struct psi_threshold {
 static std::unique_ptr<android::bpf::memevents::MemEventListener> memevent_listener(nullptr);
 static struct timespec direct_reclaim_start_tm;
 static struct timespec kswapd_start_tm;
+
+/* io_uring for LMK_PROCS_PRIO */
+static struct io_uring lmk_io_uring_ring;
+/* IO_URING_OP_READ/WRITE opcodes were introduced only on 5.6 kernel */
+static const bool isIoUringSupported = android::bpf::isAtLeastKernelVersion(5, 6, 0);
 
 static int level_oomadj[VMPRESS_LEVEL_COUNT];
 static int mpevfd[VMPRESS_LEVEL_COUNT] = { -1, -1, -1 };
@@ -1029,11 +1038,11 @@ static inline long get_time_diff_ms(struct timespec *from,
 
 /* Reads /proc/pid/status into buf. */
 static bool read_proc_status(int pid, char *buf, size_t buf_sz) {
-    char path[PATH_MAX];
+    char path[PROCFS_PATH_MAX];
     int fd;
     ssize_t size;
 
-    snprintf(path, PATH_MAX, "/proc/%d/status", pid);
+    snprintf(path, PROCFS_PATH_MAX, "/proc/%d/status", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         return false;
@@ -1070,7 +1079,7 @@ static bool parse_status_tag(char *buf, const char *tag, int64_t *out) {
 }
 
 static int proc_get_size(int pid) {
-    char path[PATH_MAX];
+    char path[PROCFS_PATH_MAX];
     char line[LINE_MAX];
     int fd;
     int rss = 0;
@@ -1078,7 +1087,7 @@ static int proc_get_size(int pid) {
     ssize_t ret;
 
     /* gid containing AID_READPROC required */
-    snprintf(path, PATH_MAX, "/proc/%d/statm", pid);
+    snprintf(path, PROCFS_PATH_MAX, "/proc/%d/statm", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd == -1)
         return -1;
@@ -1096,13 +1105,13 @@ static int proc_get_size(int pid) {
 }
 
 static char *proc_get_name(int pid, char *buf, size_t buf_size) {
-    char path[PATH_MAX];
+    char path[PROCFS_PATH_MAX];
     int fd;
     char *cp;
     ssize_t ret;
 
     /* gid containing AID_READPROC required */
-    snprintf(path, PATH_MAX, "/proc/%d/cmdline", pid);
+    snprintf(path, PROCFS_PATH_MAX, "/proc/%d/cmdline", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd == -1) {
         return NULL;
@@ -1122,21 +1131,108 @@ static char *proc_get_name(int pid, char *buf, size_t buf_size) {
     return buf;
 }
 
-static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred *cred) {
-    struct proc *procp;
-    char path[LINE_MAX];
+static void register_oom_adj_proc(const struct lmk_procprio& proc, struct ucred* cred) {
     char val[20];
     int soft_limit_mult;
-    struct lmk_procprio params;
     bool is_system_server;
     struct passwd *pwdrec;
+    struct proc* procp;
+    int oom_adj_score = proc.oomadj;
+
+    /* lmkd should not change soft limits for services */
+    if (proc.ptype == PROC_TYPE_APP && per_app_memcg) {
+        if (proc.oomadj >= 900) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 800) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 700) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 600) {
+            // Launcher should be perceptible, don't kill it.
+            oom_adj_score = 200;
+            soft_limit_mult = 1;
+        } else if (proc.oomadj >= 500) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 400) {
+            soft_limit_mult = 0;
+        } else if (proc.oomadj >= 300) {
+            soft_limit_mult = 1;
+        } else if (proc.oomadj >= 200) {
+            soft_limit_mult = 8;
+        } else if (proc.oomadj >= 100) {
+            soft_limit_mult = 10;
+        } else if (proc.oomadj >= 0) {
+            soft_limit_mult = 20;
+        } else {
+            // Persistent processes will have a large
+            // soft limit 512MB.
+            soft_limit_mult = 64;
+        }
+
+        std::string soft_limit_path;
+        if (!CgroupGetAttributePathForTask("MemSoftLimit", proc.pid, &soft_limit_path)) {
+            ALOGE("Querying MemSoftLimit path failed");
+            return;
+        }
+
+        snprintf(val, sizeof(val), "%d", soft_limit_mult * EIGHT_MEGA);
+
+        /*
+         * system_server process has no memcg under /dev/memcg/apps but should be
+         * registered with lmkd. This is the best way so far to identify it.
+         */
+        is_system_server = (oom_adj_score == SYSTEM_ADJ && (pwdrec = getpwnam("system")) != NULL &&
+                            proc.uid == pwdrec->pw_uid);
+        writefilestring(soft_limit_path.c_str(), val, !is_system_server);
+    }
+
+    procp = pid_lookup(proc.pid);
+    if (!procp) {
+        int pidfd = -1;
+
+        if (pidfd_supported) {
+            pidfd = TEMP_FAILURE_RETRY(pidfd_open(proc.pid, 0));
+            if (pidfd < 0) {
+                ALOGE("pidfd_open for pid %d failed; errno=%d", proc.pid, errno);
+                return;
+            }
+        }
+
+        procp = static_cast<struct proc*>(calloc(1, sizeof(struct proc)));
+        if (!procp) {
+            // Oh, the irony.  May need to rebuild our state.
+            return;
+        }
+
+        procp->pid = proc.pid;
+        procp->pidfd = pidfd;
+        procp->uid = proc.uid;
+        procp->reg_pid = cred->pid;
+        procp->oomadj = oom_adj_score;
+        procp->valid = true;
+        proc_insert(procp);
+    } else {
+        if (!claim_record(procp, cred->pid)) {
+            char buf[LINE_MAX];
+            char *taskname = proc_get_name(cred->pid, buf, sizeof(buf));
+            /* Only registrant of the record can remove it */
+            ALOGE("%s (%d, %d) attempts to modify a process registered by another client",
+                taskname ? taskname : "A process ", cred->uid, cred->pid);
+            return;
+        }
+        proc_unslot(procp);
+        procp->oomadj = oom_adj_score;
+        proc_slot(procp);
+    }
+}
+
+static void apply_proc_prio(const struct lmk_procprio& params, struct ucred* cred) {
+    char path[PROCFS_PATH_MAX];
+    char val[20];
     int64_t tgid;
     char buf[pagesize];
 
-    lmkd_pack_get_procprio(packet, field_count, &params);
-
-    if (params.oomadj < OOM_SCORE_ADJ_MIN ||
-        params.oomadj > OOM_SCORE_ADJ_MAX) {
+    if (params.oomadj < OOM_SCORE_ADJ_MIN || params.oomadj > OOM_SCORE_ADJ_MAX) {
         ALOGE("Invalid PROCPRIO oomadj argument %d", params.oomadj);
         return;
     }
@@ -1150,7 +1246,8 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     if (read_proc_status(params.pid, buf, sizeof(buf))) {
         if (parse_status_tag(buf, PROC_STATUS_TGID_FIELD, &tgid) && tgid != params.pid) {
             ALOGE("Attempt to register a task that is not a thread group leader "
-                  "(tid %d, tgid %" PRId64 ")", params.pid, tgid);
+                  "(tid %d, tgid %" PRId64 ")",
+                  params.pid, tgid);
             return;
         }
     }
@@ -1161,8 +1258,8 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
     snprintf(path, sizeof(path), "/proc/%d/oom_score_adj", params.pid);
     snprintf(val, sizeof(val), "%d", params.oomadj);
     if (!writefilestring(path, val, false)) {
-        ALOGW("Failed to open %s; errno=%d: process %d might have been killed",
-              path, errno, params.pid);
+        ALOGW("Failed to open %s; errno=%d: process %d might have been killed", path, errno,
+              params.pid);
         /* If this file does not exist the process is dead. */
         return;
     }
@@ -1172,92 +1269,14 @@ static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred 
         return;
     }
 
-    /* lmkd should not change soft limits for services */
-    if (params.ptype == PROC_TYPE_APP && per_app_memcg) {
-        if (params.oomadj >= 900) {
-            soft_limit_mult = 0;
-        } else if (params.oomadj >= 800) {
-            soft_limit_mult = 0;
-        } else if (params.oomadj >= 700) {
-            soft_limit_mult = 0;
-        } else if (params.oomadj >= 600) {
-            // Launcher should be perceptible, don't kill it.
-            params.oomadj = 200;
-            soft_limit_mult = 1;
-        } else if (params.oomadj >= 500) {
-            soft_limit_mult = 0;
-        } else if (params.oomadj >= 400) {
-            soft_limit_mult = 0;
-        } else if (params.oomadj >= 300) {
-            soft_limit_mult = 1;
-        } else if (params.oomadj >= 200) {
-            soft_limit_mult = 8;
-        } else if (params.oomadj >= 100) {
-            soft_limit_mult = 10;
-        } else if (params.oomadj >=   0) {
-            soft_limit_mult = 20;
-        } else {
-            // Persistent processes will have a large
-            // soft limit 512MB.
-            soft_limit_mult = 64;
-        }
+    register_oom_adj_proc(params, cred);
+}
 
-        std::string path;
-        if (!CgroupGetAttributePathForTask("MemSoftLimit", params.pid, &path)) {
-            ALOGE("Querying MemSoftLimit path failed");
-            return;
-        }
+static void cmd_procprio(LMKD_CTRL_PACKET packet, int field_count, struct ucred* cred) {
+    struct lmk_procprio proc_prio;
 
-        snprintf(val, sizeof(val), "%d", soft_limit_mult * EIGHT_MEGA);
-
-        /*
-         * system_server process has no memcg under /dev/memcg/apps but should be
-         * registered with lmkd. This is the best way so far to identify it.
-         */
-        is_system_server = (params.oomadj == SYSTEM_ADJ &&
-                            (pwdrec = getpwnam("system")) != NULL &&
-                            params.uid == pwdrec->pw_uid);
-        writefilestring(path.c_str(), val, !is_system_server);
-    }
-
-    procp = pid_lookup(params.pid);
-    if (!procp) {
-        int pidfd = -1;
-
-        if (pidfd_supported) {
-            pidfd = TEMP_FAILURE_RETRY(pidfd_open(params.pid, 0));
-            if (pidfd < 0) {
-                ALOGE("pidfd_open for pid %d failed; errno=%d", params.pid, errno);
-                return;
-            }
-        }
-
-        procp = static_cast<struct proc*>(calloc(1, sizeof(struct proc)));
-        if (!procp) {
-            // Oh, the irony.  May need to rebuild our state.
-            return;
-        }
-
-        procp->pid = params.pid;
-        procp->pidfd = pidfd;
-        procp->uid = params.uid;
-        procp->reg_pid = cred->pid;
-        procp->oomadj = params.oomadj;
-        procp->valid = true;
-        proc_insert(procp);
-    } else {
-        if (!claim_record(procp, cred->pid)) {
-            char buf[LINE_MAX];
-            char *taskname = proc_get_name(cred->pid, buf, sizeof(buf));
-            /* Only registrant of the record can remove it */
-            ALOGE("%s (%d, %d) attempts to modify a process registered by another client",
-                taskname ? taskname : "A process ", cred->uid, cred->pid);
-            return;
-        }
-        proc_unslot(procp);
-        procp->oomadj = params.oomadj;
-        proc_slot(procp);
-    }
+    lmkd_pack_get_procprio(packet, field_count, &proc_prio);
+    apply_proc_prio(proc_prio, cred);
 }
 
 static void cmd_procremove(LMKD_CTRL_PACKET packet, struct ucred *cred) {
@@ -1467,6 +1486,196 @@ static void cmd_target(int ntargets, LMKD_CTRL_PACKET packet) {
     }
 }
 
+static void handle_io_uring_procs_prio(const struct lmk_procs_prio& params, const int procs_count,
+                                       struct ucred* cred) {
+    struct io_uring_sqe* sqe;
+    struct io_uring_cqe* cqe;
+    int fds[PROCS_PRIO_MAX_RECORD_COUNT];
+    char buffers[PROCS_PRIO_MAX_RECORD_COUNT]
+                [256]; /* Reading proc/stat and write to proc/oom_score_adj */
+    char path[PROCFS_PATH_MAX];
+    char val[20];
+    int64_t tgid;
+    int ret;
+    int num_requests = 0;
+
+    ret = io_uring_queue_init(PROCS_PRIO_MAX_RECORD_COUNT, &lmk_io_uring_ring, 0);
+    if (ret) {
+        ALOGE("LMK_PROCS_PRIO failed to setup io_uring ring: %s", strerror(-ret));
+        return;
+    }
+
+    std::fill_n(fds, PROCS_PRIO_MAX_RECORD_COUNT, -1);
+    for (int i = 0; i < procs_count; i++) {
+        if (params.procs[i].oomadj < OOM_SCORE_ADJ_MIN ||
+            params.procs[i].oomadj > OOM_SCORE_ADJ_MAX)
+            ALOGW("Skipping invalid PROCS_PRIO oomadj=%d for pid=%d", params.procs[i].oomadj,
+                  params.procs[i].pid);
+        else if (params.procs[i].ptype < PROC_TYPE_FIRST ||
+                 params.procs[i].ptype >= PROC_TYPE_COUNT)
+            ALOGW("Skipping invalid PROCS_PRIO pid=%d for invalid process type arg %d",
+                  params.procs[i].pid, params.procs[i].ptype);
+        else {
+            snprintf(path, PROCFS_PATH_MAX, "/proc/%d/status", params.procs[i].pid);
+            fds[i] = open(path, O_RDONLY | O_CLOEXEC);
+            if (fds[i] < 0) continue;
+
+            sqe = io_uring_get_sqe(&lmk_io_uring_ring);
+            if (!sqe) {
+                ALOGE("LMK_PROCS_PRIO skipping pid (%d), failed to get SQE for read proc status",
+                      params.procs[i].pid);
+                close(fds[i]);
+                fds[i] = -1;
+                continue;
+            }
+
+            io_uring_prep_read(sqe, fds[i], &buffers[i], sizeof(buffers[i]), 0);
+            sqe->user_data = i;
+            num_requests++;
+        }
+    }
+
+    if (num_requests == 0) {
+        ALOGW("LMK_PROCS_PRIO has no read proc status requests to process");
+        goto err;
+    }
+
+    ret = io_uring_submit(&lmk_io_uring_ring);
+    if (ret <= 0 || ret != num_requests) {
+        ALOGE("Error submitting read processes' status to SQE: %s", strerror(ret));
+        goto err;
+    }
+
+    for (int i = 0; i < num_requests; i++) {
+        ret = TEMP_FAILURE_RETRY(io_uring_wait_cqe(&lmk_io_uring_ring, &cqe));
+        if (ret < 0 || !cqe) {
+            ALOGE("Failed to get CQE, in LMK_PROCS_PRIO, for read batching: %s", strerror(-ret));
+            goto err;
+        }
+        if (cqe->res < 0) {
+            ALOGE("Error in LMK_PROCS_PRIO for async proc status read operation: %s",
+                  strerror(-cqe->res));
+            continue;
+        }
+        if (cqe->user_data < 0 || static_cast<int>(cqe->user_data) > procs_count) {
+            ALOGE("Invalid LMK_PROCS_PRIO CQE read data: %llu", cqe->user_data);
+            continue;
+        }
+
+        const int procs_idx = cqe->user_data;
+        close(fds[procs_idx]);
+        fds[procs_idx] = -1;
+        io_uring_cqe_seen(&lmk_io_uring_ring, cqe);
+
+        if (parse_status_tag(buffers[procs_idx], PROC_STATUS_TGID_FIELD, &tgid) &&
+            tgid != params.procs[procs_idx].pid) {
+            ALOGE("Attempt to register a task that is not a thread group leader "
+                  "(tid %d, tgid %" PRId64 ")",
+                  params.procs[procs_idx].pid, tgid);
+            continue;
+        }
+
+        /* Open write file to prepare for write batch */
+        snprintf(path, sizeof(path), "/proc/%d/oom_score_adj", params.procs[procs_idx].pid);
+        fds[procs_idx] = open(path, O_WRONLY | O_CLOEXEC);
+        if (fds[procs_idx] < 0) {
+            ALOGW("Failed to open %s; errno=%d: process %d might have been killed, skipping for "
+                  "LMK_PROCS_PRIO",
+                  path, errno, params.procs[procs_idx].pid);
+            continue;
+        }
+    }
+
+    /* Prepare to write the new OOM score */
+    num_requests = 0;
+    for (int i = 0; i < procs_count; i++) {
+        if (fds[i] < 0) continue;
+
+        /* gid containing AID_READPROC required */
+        /* CAP_SYS_RESOURCE required */
+        /* CAP_DAC_OVERRIDE required */
+        snprintf(buffers[i], sizeof(buffers[i]), "%d", params.procs[i].oomadj);
+        sqe = io_uring_get_sqe(&lmk_io_uring_ring);
+        if (!sqe) {
+            ALOGE("LMK_PROCS_PRIO skipping pid (%d), failed to get SQE for write",
+                  params.procs[i].pid);
+            close(fds[i]);
+            fds[i] = -1;
+            continue;
+        }
+        io_uring_prep_write(sqe, fds[i], &buffers[i], sizeof(buffers[i]), 0);
+        sqe->user_data = i;
+        num_requests++;
+    }
+
+    if (num_requests == 0) {
+        ALOGW("LMK_PROCS_PRIO has no write proc oomadj requests to process");
+        goto err;
+    }
+
+    ret = io_uring_submit(&lmk_io_uring_ring);
+    if (ret <= 0 || ret != num_requests) {
+        ALOGE("Error submitting write data to sqe: %s", strerror(ret));
+        goto err;
+    }
+
+    /* Handle async write completions for proc/<pid>/oom_score_adj */
+    for (int i = 0; i < num_requests; i++) {
+        ret = TEMP_FAILURE_RETRY(io_uring_wait_cqe(&lmk_io_uring_ring, &cqe));
+        if (ret < 0 || !cqe) {
+            ALOGE("Failed to get CQE, in LMK_PROCS_PRIO, for write batching: %s", strerror(-ret));
+            goto err;
+        }
+        if (cqe->res < 0) {
+            ALOGE("Error in LMK_PROCS_PRIO for async proc status read operation: %s",
+                  strerror(-cqe->res));
+            continue;
+        }
+        if (cqe->user_data < 0 || static_cast<int>(cqe->user_data) > procs_count) {
+            ALOGE("Invalid LMK_PROCS_PRIO CQE read data: %llu", cqe->user_data);
+            continue;
+        }
+
+        const int procs_idx = cqe->user_data;
+        close(fds[procs_idx]);
+        fds[procs_idx] = -1;
+        io_uring_cqe_seen(&lmk_io_uring_ring, cqe);
+
+        if (use_inkernel_interface) {
+            stats_store_taskname(params.procs[procs_idx].pid,
+                                 proc_get_name(params.procs[procs_idx].pid, path, sizeof(path)));
+            continue;
+        }
+
+        register_oom_adj_proc(params.procs[procs_idx], cred);
+    }
+
+    io_uring_queue_exit(&lmk_io_uring_ring);
+    return;
+
+err:
+    for (int fd : fds)
+        if (fd >= 0) close(fd);
+    io_uring_queue_exit(&lmk_io_uring_ring);
+    return;
+}
+
+static void cmd_procs_prio(LMKD_CTRL_PACKET packet, const int field_count, struct ucred* cred) {
+    struct lmk_procs_prio params;
+
+    const int procs_count = lmkd_pack_get_procs_prio(packet, &params, field_count);
+    if (procs_count < 0) {
+        ALOGE("LMK_PROCS_PRIO received invalid packet format");
+        return;
+    }
+
+    if (isIoUringSupported) {
+        handle_io_uring_procs_prio(params, procs_count, cred);
+    } else {
+        for (int i = 0; i < procs_count; i++) apply_proc_prio(params.procs[i], cred);
+    }
+}
+
 static void ctrl_command_handler(int dsock_idx) {
     LMKD_CTRL_PACKET packet;
     struct ucred cred;
@@ -1614,6 +1823,9 @@ static void ctrl_command_handler(int dsock_idx) {
         if (ctrl_data_write(dsock_idx, (char*)packet, len) != len) {
             ALOGE("Failed to report boot-completed operation results");
         }
+        break;
+    case LMK_PROCS_PRIO:
+        cmd_procs_prio(packet, nargs, &cred);
         break;
     default:
         ALOGE("Received unknown command code %d", cmd);
@@ -2911,8 +3123,7 @@ update_watermarks:
     } else if (reclaim == DIRECT_RECLAIM && direct_reclaim_threshold_ms > 0 &&
                direct_reclaim_duration_ms > direct_reclaim_threshold_ms) {
         kill_reason = DIRECT_RECL_STUCK;
-        snprintf(kill_desc, sizeof(kill_desc),
-                 "device is stuck in direct reclaim (%" PRId64 "ms > %dms)",
+        snprintf(kill_desc, sizeof(kill_desc), "device is stuck in direct reclaim (%ldms > %dms)",
                  direct_reclaim_duration_ms, direct_reclaim_threshold_ms);
     } else if (check_filecache) {
         int64_t file_lru_kb = (vs.field.nr_inactive_file + vs.field.nr_active_file) * page_k;

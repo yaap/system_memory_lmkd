@@ -38,6 +38,7 @@ enum lmk_cmd {
     LMK_STAT_KILL_OCCURRED, /* Unsolicited msg to subscribed clients on proc kills for statsd log */
     LMK_START_MONITORING,   /* Start psi monitoring if it was skipped earlier */
     LMK_BOOT_COMPLETED,     /* Notify LMKD boot is completed */
+    LMK_PROCS_PRIO,         /* Register processes and set the same oom_adj_score */
 };
 
 /*
@@ -108,6 +109,8 @@ struct lmk_procprio {
     int oomadj;
     enum proc_type ptype;
 };
+#define LMK_PROCPRIO_FIELD_COUNT 4
+#define LMK_PROCPRIO_SIZE (LMK_PROCPRIO_FIELD_COUNT * sizeof(int))
 
 /*
  * For LMK_PROCPRIO packet get its payload.
@@ -322,6 +325,54 @@ struct lmk_boot_completed_notif_reply {
 static inline void lmkd_pack_get_boot_completed_notif_repl(
         LMKD_CTRL_PACKET packet, struct lmk_boot_completed_notif_reply* params) {
     params->result = ntohl(packet[1]);
+}
+
+#define PROCS_PRIO_MAX_RECORD_COUNT (CTRL_PACKET_MAX_SIZE / LMK_PROCPRIO_SIZE)
+
+struct lmk_procs_prio {
+    struct lmk_procprio procs[PROCS_PRIO_MAX_RECORD_COUNT];
+};
+
+/*
+ * For LMK_PROCS_PRIO packet get its payload.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline int lmkd_pack_get_procs_prio(LMKD_CTRL_PACKET packet, struct lmk_procs_prio* params,
+                                           const int field_count) {
+    if (field_count < LMK_PROCPRIO_FIELD_COUNT || (field_count % LMK_PROCPRIO_FIELD_COUNT) != 0)
+        return -1;
+    const int procs_count = (field_count / LMK_PROCPRIO_FIELD_COUNT);
+
+    /* Start packet at 1 since 0 is cmd type */
+    int packetIdx = 1;
+    for (int procs_idx = 0; procs_idx < procs_count; procs_idx++) {
+        params->procs[procs_idx].pid = (pid_t)ntohl(packet[packetIdx++]);
+        params->procs[procs_idx].uid = (uid_t)ntohl(packet[packetIdx++]);
+        params->procs[procs_idx].oomadj = ntohl(packet[packetIdx++]);
+        params->procs[procs_idx].ptype = (enum proc_type)ntohl(packet[packetIdx++]);
+    }
+
+    return procs_count;
+}
+
+/*
+ * Prepare LMK_PROCS_PRIO packet and return packet size in bytes.
+ * Warning: no checks performed, caller should ensure valid parameters.
+ */
+static inline size_t lmkd_pack_set_procs_prio(LMKD_CTRL_PACKET packet,
+                                              struct lmk_procs_prio* params,
+                                              const int procs_count) {
+    packet[0] = htonl(LMK_PROCS_PRIO);
+    int packetIdx = 1;
+
+    for (int i = 0; i < procs_count; i++) {
+        packet[packetIdx++] = htonl(params->procs[i].pid);
+        packet[packetIdx++] = htonl(params->procs[i].uid);
+        packet[packetIdx++] = htonl(params->procs[i].oomadj);
+        packet[packetIdx++] = htonl((int)params->procs[i].ptype);
+    }
+
+    return packetIdx * sizeof(int);
 }
 
 __END_DECLS

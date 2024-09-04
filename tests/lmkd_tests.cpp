@@ -26,6 +26,7 @@
 #include <liblmkd_utils.h>
 #include <log/log_properties.h>
 #include <private/android_filesystem_config.h>
+#include <stdlib.h>
 
 using namespace android::base;
 
@@ -113,6 +114,16 @@ class LmkdTest : public ::testing::Test {
         }
     }
 
+    void SendProcsPrioRequest(struct lmk_procs_prio procs_prio_request, int procs_count) {
+        ASSERT_FALSE(lmkd_register_procs(sock, &procs_prio_request, procs_count) < 0)
+                << "Failed to communicate with lmkd, err=" << strerror(errno);
+    }
+
+    void SendGetKillCountRequest(struct lmk_getkillcnt* get_kill_cnt_request) {
+        ASSERT_GE(lmkd_get_kill_count(sock, get_kill_cnt_request), 0)
+                << "Failed fetching lmkd kill count";
+    }
+
     static std::string ExecCommand(const std::string& command) {
         FILE* fp = popen(command.c_str(), "r");
         std::string content;
@@ -169,6 +180,8 @@ class LmkdTest : public ::testing::Test {
         return sscanf(line.c_str(), LMKD_REAP_NO_PROCESS_TEMPLATE, &reap_pid) == 1 &&
                reap_pid == pid;
     }
+
+    uid_t getLmkdTestUid() const { return uid; }
 
   private:
     int sock;
@@ -237,6 +250,88 @@ TEST_F(LmkdTest, TargetReaping) {
         GTEST_LOG_(INFO) << "Reclaim speed " << reclaim_speed << "kB/ms (" << rss << "kB rss + "
                          << swap << "kB swap) / " << reap_time << "ms";
    }
+}
+
+/*
+ * Verify that the `PROCS_PRIO` cmd is able to receive a batch of processes and adjust their
+ * those processes' OOM score.
+ */
+TEST_F(LmkdTest, batch_procs_oom_score_adj) {
+    struct ChildProcessInfo {
+        pid_t pid;
+        int original_oom_score;
+        int req_new_oom_score;
+    };
+
+    struct ChildProcessInfo children_info[PROCS_PRIO_MAX_RECORD_COUNT];
+
+    for (unsigned int i = 0; i < PROCS_PRIO_MAX_RECORD_COUNT; i++) {
+        children_info[i].pid = fork();
+        if (children_info[i].pid < 0) {
+            for (const auto child : children_info)
+                if (child.pid >= 0) kill(child.pid, SIGKILL);
+            FAIL() << "Failed forking process in iteration=" << i;
+        } else if (children_info[i].pid == 0) {
+            /*
+             * Keep the children alive, the parent process will kill it
+             * once we are done with it.
+             */
+            while (true) {
+                sleep(20);
+            }
+        }
+    }
+
+    struct lmk_procs_prio procs_prio_request;
+    const uid_t parent_uid = getLmkdTestUid();
+
+    for (unsigned int i = 0; i < PROCS_PRIO_MAX_RECORD_COUNT; i++) {
+        if (children_info[i].pid < 0) continue;
+
+        const std::string process_oom_path =
+                "proc/" + std::to_string(children_info[i].pid) + "/oom_score_adj";
+        std::string curr_oom_score;
+        if (!ReadFileToString(process_oom_path, &curr_oom_score) || curr_oom_score.empty()) {
+            for (const auto child : children_info)
+                if (child.pid >= 0) kill(child.pid, SIGKILL);
+            FAIL() << "Failed reading original oom score for child process: "
+                   << children_info[i].pid;
+        }
+
+        children_info[i].original_oom_score = atoi(curr_oom_score.c_str());
+        children_info[i].req_new_oom_score =
+                ((unsigned int)children_info[i].original_oom_score != i) ? i : (i + 10);
+        procs_prio_request.procs[i] = {.pid = children_info[i].pid,
+                                       .uid = parent_uid,
+                                       .oomadj = children_info[i].req_new_oom_score,
+                                       .ptype = proc_type::PROC_TYPE_APP};
+    }
+
+    /*
+     * Submit batching, then send a new/different request and wait for LMKD
+     * to respond to it. This ensures that LMKD has finished the batching
+     * request and we can now read/validate the new OOM scores.
+     */
+    SendProcsPrioRequest(procs_prio_request, PROCS_PRIO_MAX_RECORD_COUNT);
+    struct lmk_getkillcnt kill_cnt_req = {.min_oomadj = -1000, .max_oomadj = 1000};
+    SendGetKillCountRequest(&kill_cnt_req);
+
+    for (auto child_info : children_info) {
+        if (child_info.pid < 0) continue;
+        const std::string process_oom_path =
+                "proc/" + std::to_string(child_info.pid) + "/oom_score_adj";
+        std::string curr_oom_score;
+        if (!ReadFileToString(process_oom_path, &curr_oom_score) || curr_oom_score.empty()) {
+            for (const auto child : children_info)
+                if (child.pid >= 0) kill(child.pid, SIGKILL);
+            FAIL() << "Failed reading new oom score for child process: " << child_info.pid;
+        }
+        kill(child_info.pid, SIGKILL);
+
+        const int actual_new_oom_score = atoi(curr_oom_score.c_str());
+        ASSERT_EQ(child_info.req_new_oom_score, actual_new_oom_score)
+                << "Child with pid=" << child_info.pid << " didn't update its OOM score";
+    }
 }
 
 int main(int argc, char** argv) {

@@ -54,7 +54,9 @@ cc_binary {
     static_libs: [
         "libstatslogc",
         "liblmkd_utils",
+        "liburing",
     ],
+    include_dirs: ["bionic/libc/kernel"],
     header_libs: [
         "bpf_headers",
     ],
