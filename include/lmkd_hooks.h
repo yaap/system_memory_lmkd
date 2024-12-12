@@ -50,6 +50,11 @@ bool lmkd_init_hook();
  */
 int lmkd_free_memory_before_kill_hook(struct proc* procp, int proc_size_pages,
                                       int proc_oom_score, int kill_reason);
+/*
+ * Invoked when LMKD has no more candidates to kill at any priority. The hook
+ * may attempt to free memory elsewhere to try to preserve system stability.
+ */
+void lmkd_no_kill_candidates_hook();
 
 #else /* LMKD_USE_HOOKS */
 
@@ -59,6 +64,7 @@ static inline int lmkd_free_memory_before_kill_hook(struct proc*, int, int,
                                                     int) {
   return 0;
 }
+static inline void lmkd_no_kill_candidates_hook() {}
 
 #endif /* LMKD_USE_HOOKS */
 

@@ -245,11 +245,14 @@ static inline size_t lmkd_pack_set_subscribe(LMKD_CTRL_PACKET packet, enum async
  * Prepare LMK_PROCKILL unsolicited packet and return packet size in bytes.
  * Warning: no checks performed, caller should ensure valid parameters.
  */
-static inline size_t lmkd_pack_set_prockills(LMKD_CTRL_PACKET packet, pid_t pid, uid_t uid) {
+static inline size_t lmkd_pack_set_prockills(LMKD_CTRL_PACKET packet, pid_t pid, uid_t uid,
+                                             int rss_kb) {
     packet[0] = htonl(LMK_PROCKILL);
     packet[1] = htonl(pid);
     packet[2] = htonl(uid);
-    return 3 * sizeof(int);
+    packet[3] = htonl(rss_kb);
+
+    return 4 * sizeof(int);
 }
 
 /*

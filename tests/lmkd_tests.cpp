@@ -42,6 +42,7 @@ using namespace android::base;
 #define LMKD_REAP_FAIL_TEMPLATE "process_mrelease %d failed"
 
 #define LMKD_KILL_LINE_START LMKD_LOGCAT_MARKER ": Kill"
+#define LMKD_KILLED_LINE_START LMKD_LOGCAT_MARKER ": Process got killed"
 #define LMKD_REAP_LINE_START LMKD_LOGCAT_MARKER ": Process"
 #define LMKD_REAP_TIME_TEMPLATE LMKD_LOGCAT_MARKER ": Process %d was reaped in %ldms"
 #define LMKD_REAP_MRELESE_ERR_MARKER ": process_mrelease"
@@ -209,6 +210,9 @@ TEST_F(LmkdTest, TargetReaping) {
         FAIL() << "Target process " << pid << " was not killed";
     }
 
+    // wait 200ms for the reaper thread to write its output in the logcat
+    usleep(200000);
+
     std::string regex = StringPrintf("((" LMKD_KILL_TEMPLATE ")|(" LMKD_REAP_TEMPLATE
                                      ")|(" LMKD_REAP_FAIL_TEMPLATE "))",
                                      pid, pid, pid);
@@ -223,8 +227,10 @@ TEST_F(LmkdTest, TargetReaping) {
     long rss, swap;
     ASSERT_TRUE(ParseProcSize(line, rss, swap)) << "Kill report format is invalid";
 
+    line_start = 0;
+retry:
     // find reap duration report
-    line_start = logcat_out.find(LMKD_REAP_LINE_START);
+    line_start = logcat_out.find(LMKD_REAP_LINE_START, line_start);
     if (line_start == std::string::npos) {
         // Target might have exited before reaping started
         line_start = logcat_out.find(LMKD_REAP_MRELESE_ERR_MARKER);
@@ -240,6 +246,11 @@ TEST_F(LmkdTest, TargetReaping) {
     line_end = logcat_out.find('\n', line_start);
     line = logcat_out.substr(
             line_start, line_end == std::string::npos ? std::string::npos : line_end - line_start);
+    if (line.find(LMKD_KILLED_LINE_START) != std::string::npos) {
+        // we found process kill report, keep looking for reaping report
+        line_start = line_end;
+        goto retry;
+    }
     long reap_time;
     ASSERT_TRUE(ParseReapTime(line, pid, reap_time) && reap_time >= 0)
             << "Reaping time report format is invalid";
