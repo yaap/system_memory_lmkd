@@ -30,10 +30,6 @@
 
 using namespace android::base;
 
-#ifndef __NR_process_mrelease
-#define __NR_process_mrelease 448
-#endif
-
 #define INKERNEL_MINFREE_PATH "/sys/module/lowmemorykiller/parameters/minfree"
 
 #define LMKD_LOGCAT_MARKER "lowmemorykiller"
