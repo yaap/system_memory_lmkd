@@ -2891,7 +2891,17 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
          * counter in that case to ensure a kill if a new eligible process appears.
          */
         if (windows_passed > 1 || prev_thrash_growth < thrashing_limit) {
-            prev_thrash_growth >>= windows_passed;
+            if (static_cast<size_t>(windows_passed) < 8 * sizeof(prev_thrash_growth)) {
+                prev_thrash_growth >>= windows_passed;
+            } else {
+                /*
+                 * Reset to 0 explicitly if windows_passed is too large. Shifting by a value
+                 * greater than or equal to the size of the left operand is undefined behavior,
+                 * and in practice (for example, ASR instruction on Arm) only the lowest 6 bits
+                 * are used, which can produce incorrect results.
+                 */
+                prev_thrash_growth = 0;
+            }
         }
 
         /* Record file-backed pagecache size when crossing THRASHING_RESET_INTERVAL_MS */
