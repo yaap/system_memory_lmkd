@@ -2490,7 +2490,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         /* Delete process record even when we fail to kill so that we don't get stuck on it */
         goto out;
     }
-
+    ATRACE_INSTANT_FOR_TRACK(LOG_TAG, desc);
     last_kill_tm = *tm;
 
     inc_killcnt(procp->oomadj);
