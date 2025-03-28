@@ -3042,7 +3042,7 @@ update_watermarks:
     }
 
     /* Check if a cached app should be killed */
-    if (kill_reason == NONE && wmark < WMARK_HIGH) {
+    if (kill_reason == NONE && wmark < WMARK_HIGH && lowmem_min_oom_score <= OOM_SCORE_ADJ_MAX) {
         kill_reason = LOW_MEM;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached",
             wmark < WMARK_LOW ? "min" : "low");
