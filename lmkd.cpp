@@ -3191,7 +3191,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 
     record_wakeup_time(&curr_tm, events ? Event : Polling, &wi);
 
-    if (kill_timeout_ms &&
+    if (kill_timeout_ms == 0 ||
         get_time_diff_ms(&last_kill_tm, &curr_tm) < static_cast<long>(kill_timeout_ms)) {
         /*
          * If we're within the no-kill timeout, see if there's pending reclaim work
