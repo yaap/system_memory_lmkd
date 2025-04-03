@@ -2731,6 +2731,7 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
     static int64_t prev_thrash_growth = 0;
     static bool check_filecache = false;
     static int max_thrashing = 0;
+    static bool initialized = false;
 
     union meminfo mi;
     union vmstat vs;
@@ -2812,15 +2813,18 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
         return;
     }
 
-    /* Reset states after process got killed */
-    if (killing) {
-        killing = false;
-        cycle_after_kill = true;
+    /* Initialize states the first time we get here and reset after a kill */
+    if (!initialized || killing) {
+        if (killing) {
+            killing = false;
+            cycle_after_kill = true;
+        }
         /* Reset file-backed pagecache size and refault amounts after a kill */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
         init_ws_refault = workingset_refault_file;
         thrashing_reset_tm = curr_tm;
         prev_thrash_growth = 0;
+        initialized = true;
     }
 
     /* Check free swap levels */
@@ -2887,7 +2891,17 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
          * counter in that case to ensure a kill if a new eligible process appears.
          */
         if (windows_passed > 1 || prev_thrash_growth < thrashing_limit) {
-            prev_thrash_growth >>= windows_passed;
+            if (static_cast<size_t>(windows_passed) < 8 * sizeof(prev_thrash_growth)) {
+                prev_thrash_growth >>= windows_passed;
+            } else {
+                /*
+                 * Reset to 0 explicitly if windows_passed is too large. Shifting by a value
+                 * greater than or equal to the size of the left operand is undefined behavior,
+                 * and in practice (for example, ASR instruction on Arm) only the lowest 6 bits
+                 * are used, which can produce incorrect results.
+                 */
+                prev_thrash_growth = 0;
+            }
         }
 
         /* Record file-backed pagecache size when crossing THRASHING_RESET_INTERVAL_MS */
