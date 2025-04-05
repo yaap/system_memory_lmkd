@@ -60,7 +60,8 @@ properties:
                                  any eligible task (fast decision). Default = false
 
   - `ro.lmk.kill_timeout_ms`:    duration in ms after a kill when no additional
-                                 kill will be done. Default = 100
+                                 kill will be done. Setting to 0 means an infinite
+                                 timeout. Default = 100
 
   - `ro.lmk.debug`:              enable lmkd debug logs, Default = false
 
