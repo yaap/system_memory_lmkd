@@ -158,12 +158,11 @@ struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t ui
         if (memory_stat_from_cgroup(&mem_st, pid, uid) == 0) {
             return &mem_st;
         }
-    } else {
-        if (memory_stat_from_procfs(&mem_st, pid) == 0) {
-            mem_st.rss_in_bytes = rss_bytes;
-            mem_st.swap_in_bytes = swap_bytes;
-            return &mem_st;
-        }
+    }
+    if (memory_stat_from_procfs(&mem_st, pid) == 0) {
+        mem_st.rss_in_bytes = rss_bytes;
+        mem_st.swap_in_bytes = swap_bytes;
+        return &mem_st;
     }
 
     return NULL;

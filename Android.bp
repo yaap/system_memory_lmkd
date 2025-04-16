@@ -88,6 +88,10 @@ cc_library_static {
         "liblog",
         "libprocessgroup",
     ],
+    header_libs: [
+        "libmemevents_headers",
+        "libbase_headers",
+    ],
 }
 
 cc_library_static {

@@ -26,6 +26,7 @@
 #include <sys/types.h>
 
 #include <cutils/properties.h>
+#include <memevents/memevents.h>
 
 __BEGIN_DECLS
 
@@ -66,6 +67,9 @@ enum kill_reasons {
     LOW_FILECACHE_AFTER_THRASHING,
     LOW_MEM,
     DIRECT_RECL_STUCK,
+    /* reserve aosp kill 0 ~ 999 */
+    VENDOR_KILL_REASON_BASE = 1000,
+    VENDOR_KILL_REASON_END = VENDOR_KILL_REASON_BASE + NUM_VENDOR_LMK_KILL_REASON - 1,
     KILL_REASON_COUNT
 };
 
