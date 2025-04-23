@@ -583,7 +583,7 @@ static long page_k; /* page size in kB */
 static bool update_props();
 static bool init_monitors();
 static void destroy_monitors();
-static bool init_memevent_listener_monitoring();
+static void init_memevent();
 
 static int clamp(int low, int high, int value) {
     return std::max(std::min(value, high), low);
@@ -1629,15 +1629,7 @@ static void ctrl_command_handler(int dsock_idx) {
              * Initialize the memevent listener after boot is completed to prevent
              * waiting, during boot-up, for BPF programs to be loaded.
              */
-            if (init_memevent_listener_monitoring()) {
-                ALOGI("Using memevents for direct reclaim and kswapd detection");
-            } else {
-                ALOGI("Using vmstats for direct reclaim and kswapd detection");
-                if (direct_reclaim_threshold_ms > 0) {
-                    ALOGW("Kernel support for direct_reclaim_threshold_ms is not found");
-                    direct_reclaim_threshold_ms = 0;
-                }
-            }
+            init_memevent();
             result = 0;
             boot_completed_handled = true;
         }
@@ -3572,6 +3564,18 @@ static bool init_memevent_listener_monitoring() {
     return true;
 }
 
+static void init_memevent() {
+    if (init_memevent_listener_monitoring()) {
+        ALOGI("Using memevents for direct reclaim and kswapd detection");
+    } else {
+        ALOGI("Using vmstats for direct reclaim and kswapd detection");
+        if (direct_reclaim_threshold_ms > 0) {
+            ALOGW("Kernel support for direct_reclaim_threshold_ms is not found");
+            direct_reclaim_threshold_ms = 0;
+        }
+    }
+}
+
 static bool init_psi_monitors() {
     /*
      * When PSI is used on low-ram devices or on high-end devices without memfree levels
@@ -3904,6 +3908,14 @@ static int init(void) {
     if (!lmkd_init_hook()) {
         ALOGE("Failed to initialize LMKD hooks.");
         return -1;
+    }
+
+    /*
+     * If boot is already complete (e.g., due to an LMKD crash
+     * and restart), initialize the memevent listener now.
+     */
+    if (property_get_bool("sys.boot_completed", false)) {
+        init_memevent();
     }
 
     return 0;
