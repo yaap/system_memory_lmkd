@@ -60,29 +60,8 @@
 #include "statslog.h"
 #include "watchdog.h"
 
-/*
- * Define LMKD_TRACE_KILLS to record lmkd kills in kernel traces
- * to profile and correlate with OOM kills
- */
-#ifdef LMKD_TRACE_KILLS
-
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #include <cutils/trace.h>
-
-static inline void trace_kill_start(const char *desc) {
-    ATRACE_BEGIN(desc);
-}
-
-static inline void trace_kill_end() {
-    ATRACE_END();
-}
-
-#else /* LMKD_TRACE_KILLS */
-
-static inline void trace_kill_start(const char *) {}
-static inline void trace_kill_end() {}
-
-#endif /* LMKD_TRACE_KILLS */
 
 #ifndef __unused
 #define __unused __attribute__((__unused__))
@@ -2468,13 +2447,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
       ALOGI("Skipping kill; %ld kB freed elsewhere.", result * page_k);
       return result;
     }
-
-    trace_kill_start(desc);
-
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
     kill_result = reaper.kill({ pidfd, pid, uid }, false);
-
-    trace_kill_end();
 
     if (kill_result) {
         stop_wait_for_proc_kill(false);
