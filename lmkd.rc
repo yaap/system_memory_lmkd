@@ -38,6 +38,9 @@ on property:persist.device_config.lmkd_native.psi_partial_stall_ms=*
 on property:persist.device_config.lmkd_native.psi_complete_stall_ms=*
     setprop lmkd.reinit ${sys.boot_completed:-0}
 
+on property:persist.device_config.lmkd_native.psi_window_size_ms=*
+    setprop lmkd.reinit ${sys.boot_completed:-0}
+
 on property:persist.device_config.lmkd_native.thrashing_limit=*
     setprop lmkd.reinit ${sys.boot_completed:-0}
 
