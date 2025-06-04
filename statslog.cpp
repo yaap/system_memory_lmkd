@@ -32,13 +32,11 @@
 
 #include <string>
 
+#include <android-base/stringify.h>
 #include <lmkd.h>
 #include <processgroup/processgroup.h>
 
 #ifdef LMKD_LOG_STATS
-
-#define STRINGIFY(x) STRINGIFY_INTERNAL(x)
-#define STRINGIFY_INTERNAL(x) #x
 
 /**
  * Used to make sure that the payload is always smaller than LMKD_REPLY_MAX_SIZE
