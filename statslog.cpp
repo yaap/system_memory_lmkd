@@ -70,7 +70,9 @@ static void memory_stat_parse_line(const char* line, struct memory_stat* mem_st)
     char key[MAX_TASKNAME_LEN + 1];
     int64_t value;
 
-    sscanf(line, "%" STRINGIFY(MAX_TASKNAME_LEN) "s  %" SCNd64 "", key, &value);
+    if (sscanf(line, "%" STRINGIFY(MAX_TASKNAME_LEN) "s  %" SCNd64 "", key, &value) != 2) {
+        return;
+    }
 
     if (strcmp(key, "total_") < 0) {
         return;
