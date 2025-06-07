@@ -43,6 +43,8 @@ using namespace android::base;
 #define LMKD_REAP_TIME_TEMPLATE LMKD_LOGCAT_MARKER ": Process %d was reaped in %ldms"
 #define LMKD_REAP_MRELESE_ERR_MARKER ": process_mrelease"
 #define LMKD_REAP_NO_PROCESS_TEMPLATE ": process_mrelease %d failed: No such process"
+#define LMKD_OOM_KILL_MARKER "oom-killer"
+#define LMKD_OOM_KILL_LINE "lmkd_tests invoked oom-killer"
 
 #define ONE_MB (1 << 20)
 
@@ -140,6 +142,12 @@ class LmkdTest : public ::testing::Test {
         return ExecCommand(cmd);
     }
 
+    static std::string ReadKernelLogcat(const std::string& regex) {
+        std::string cmd = "logcat -d -b kernel";
+        cmd += " -e \"" + regex + "\"";
+        return ExecCommand(cmd);
+    }
+
     static size_t ConsumeMemory(size_t total_size, size_t step_size, size_t step_delay) {
         volatile void* ptr;
         size_t allocated_size = 0;
@@ -216,7 +224,13 @@ TEST_F(LmkdTest, TargetReaping) {
 
     // find kill report
     size_t line_start = logcat_out.find(LMKD_KILL_LINE_START);
-    ASSERT_TRUE(line_start != std::string::npos) << "Kill report is not found";
+    if (line_start == std::string::npos) {
+        // no kill report, test might have been killed by the OOM killer
+        if (ReadKernelLogcat(LMKD_OOM_KILL_MARKER).find(LMKD_OOM_KILL_LINE) != std::string::npos) {
+            return;
+        }
+        FAIL() << "Kill report is not found";
+    }
     size_t line_end = logcat_out.find('\n', line_start);
     std::string line = logcat_out.substr(
             line_start, line_end == std::string::npos ? std::string::npos : line_end - line_start);
