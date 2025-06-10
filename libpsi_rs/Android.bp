@@ -1,0 +1,19 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_library {
+    name: "libpsi_rs",
+    crate_name: "psi_rs",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libanyhow",
+        "libnix",
+        "liblog_rust",
+    ],
+    apex_available: [
+        "com.android.virt",
+        "//apex_available:platform",
+    ],
+}
