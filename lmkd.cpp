@@ -110,12 +110,11 @@
         property_get_##type("ro.lmk." name, def))
 
 /*
- * PSI monitor tracking window size.
- * PSI monitor generates events at most once per window,
- * therefore we poll memory state for the duration of
- * PSI_WINDOW_SIZE_MS after the event happens.
+ * Default PSI monitor tracking window size.
+ * PSI monitor generates events at most once per window, therefore we poll
+ * memory state for the duration of the window after PSI event happens.
  */
-#define PSI_WINDOW_SIZE_MS 1000
+#define DEFAULT_PSI_WINDOW_SIZE_MS 1000
 /* Polling period after PSI signal when pressure is high */
 #define PSI_POLL_PERIOD_SHORT_MS 10
 /* Polling period after PSI signal when pressure is low */
@@ -207,6 +206,7 @@ static bool per_app_memcg;
 static int swap_free_low_percentage;
 static int psi_partial_stall_ms;
 static int psi_complete_stall_ms;
+static int psi_window_size_ms;
 static int thrashing_limit_pct;
 static int thrashing_limit_decay_pct;
 static int thrashing_critical_pct;
@@ -3361,8 +3361,8 @@ static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
     }
 
     fd = init_psi_monitor(psi_thresholds[level].stall_type,
-        psi_thresholds[level].threshold_ms * US_PER_MS,
-        PSI_WINDOW_SIZE_MS * US_PER_MS);
+                          psi_thresholds[level].threshold_ms * US_PER_MS,
+                          psi_window_size_ms * US_PER_MS);
 
     if (fd < 0) {
         return false;
@@ -3919,7 +3919,7 @@ static void call_handler(struct event_handler_info* handler_info,
     switch (poll_params->update) {
     case POLLING_START:
         /*
-         * Poll for the duration of PSI_WINDOW_SIZE_MS after the
+         * Poll for the duration of psi_window_size_ms after the
          * initial PSI event because psi events are rate-limited
          * at one per sec.
          */
@@ -3936,7 +3936,7 @@ static void call_handler(struct event_handler_info* handler_info,
         break;
     case POLLING_DO_NOT_CHANGE:
         if (poll_params->poll_handler &&
-            get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > PSI_WINDOW_SIZE_MS) {
+            get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > psi_window_size_ms) {
             /* Polled for the duration of PSI window, time to stop */
             poll_params->poll_handler = NULL;
         }
@@ -4152,6 +4152,7 @@ static bool update_props() {
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = GET_LMK_PROPERTY(int32, "psi_complete_stall_ms",
         DEF_COMPLETE_STALL);
+    psi_window_size_ms = GET_LMK_PROPERTY(int32, "psi_window_size_ms", DEFAULT_PSI_WINDOW_SIZE_MS);
     thrashing_limit_pct =
             std::max(0, GET_LMK_PROPERTY(int32, "thrashing_limit",
                                          low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));

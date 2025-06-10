@@ -106,6 +106,14 @@ properties:
                                  acceptable value is 201 (apps up to perceptible).
                                  Default = 701 (all cached apps excluding the last
                                  active one).
+  - `ro.lmk.psi_window_size_ms`: PSI monitoring window size, in milliseconds. Also
+                                 controls the polling duration after each memory
+                                 pressure signal. Default is 1000 (1 second).
+                                 Smaller monitoring windows mean faster reaction
+                                 to memory pressure, but could also make LMKD to
+                                 be more aggressive. When changing this value,
+                                 consider scaling `psi_{partial, complete}_stall_ms`
+                                 values accordingly.
 
 lmkd will set the following Android properties according to current system
 configurations:
