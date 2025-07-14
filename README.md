@@ -114,6 +114,14 @@ properties:
                                  be more aggressive. When changing this value,
                                  consider scaling `psi_{partial, complete}_stall_ms`
                                  values accordingly.
+  - `ro.lmk.relaxed_available_memory`: flag to relax the definition of available
+                                 memory in swap_compression_ratio's calculation.
+                                 When this flag is not set, only free pages and
+                                 easily reclaimable pages are considered
+                                 available. When set, all memory that can be
+                                 reclaimed without writing to disk is considered
+                                 available.
+                                 Default = false
 
 lmkd will set the following Android properties according to current system
 configurations:

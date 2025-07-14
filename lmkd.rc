@@ -29,6 +29,9 @@ on property:persist.device_config.lmkd_native.kill_heaviest_task=*
 on property:persist.device_config.lmkd_native.kill_timeout_ms=*
     setprop lmkd.reinit ${sys.boot_completed:-0}
 
+on property:persist.device_config.lmkd_native.relaxed_available_memory=*
+    setprop lmkd.reinit ${sys.boot_completed:-0}
+
 on property:persist.device_config.lmkd_native.swap_free_low_percentage=*
     setprop lmkd.reinit ${sys.boot_completed:-0}
 
