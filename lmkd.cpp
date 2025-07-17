@@ -142,6 +142,8 @@
 #define DEF_DIRECT_RECL_THRESH_MS 0
 /* ro.lmk.swap_compression_ratio property defaults */
 #define DEF_SWAP_COMP_RATIO 1
+/* ro.lmk.swap_compression_ratio_div property defaults */
+#define DEF_SWAP_COMP_RATIO_DIV 1
 /* ro.lmk.lowmem_min_oom_score defaults */
 #define DEF_LOWMEM_MIN_SCORE (PREVIOUS_APP_ADJ + 1)
 
@@ -218,6 +220,7 @@ static int kpoll_fd;
 static bool delay_monitors_until_boot;
 static int direct_reclaim_threshold_ms;
 static int swap_compression_ratio;
+static int swap_compression_ratio_div;
 static bool relaxed_available_memory;
 static int lowmem_min_oom_score;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
@@ -1971,11 +1974,11 @@ static int meminfo_parse(union meminfo *mi) {
         int64_t anon_pages = mi->field.active_anon + mi->field.inactive_anon;
         /**
          * Reclaiming anonymous memory only frees up this much memory:
-         *  anon_pages - (anon_pages / swap_compression_ratio)
+         *  anon_pages - (anon_pages / (swap_compression_ratio / swap_compression_ratio_div))
          * After a little algebra, that becomes:
          */
-        mi->field.easy_available +=
-                (swap_compression_ratio - 1) * anon_pages / swap_compression_ratio;
+        mi->field.easy_available += (swap_compression_ratio - swap_compression_ratio_div) *
+                                    anon_pages / swap_compression_ratio;
     } else {
         mi->field.easy_available += mi->field.inactive_file;
     }
@@ -1991,7 +1994,8 @@ static int meminfo_parse(union meminfo *mi) {
 // By setting swap_compression_ratio to 0, available memory can be ignored.
 static inline int64_t get_free_swap(union meminfo *mi) {
     if (swap_compression_ratio)
-        return std::min(mi->field.free_swap, mi->field.easy_available * swap_compression_ratio);
+        return std::min(mi->field.free_swap, mi->field.easy_available * swap_compression_ratio /
+                                                     swap_compression_ratio_div);
     return mi->field.free_swap;
 }
 
@@ -4190,6 +4194,8 @@ static bool update_props() {
             GET_LMK_PROPERTY(int64, "direct_reclaim_threshold_ms", DEF_DIRECT_RECL_THRESH_MS);
     swap_compression_ratio =
             GET_LMK_PROPERTY(int64, "swap_compression_ratio", DEF_SWAP_COMP_RATIO);
+    swap_compression_ratio_div =
+            GET_LMK_PROPERTY(int64, "swap_compression_ratio_div", DEF_SWAP_COMP_RATIO_DIV);
     relaxed_available_memory = GET_LMK_PROPERTY(bool, "relaxed_available_memory", false);
     lowmem_min_oom_score =
             std::max(PERCEPTIBLE_APP_ADJ + 1,
