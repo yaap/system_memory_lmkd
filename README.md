@@ -100,6 +100,10 @@ properties:
                                  to 0 will ignore available memory and assume that
                                  configured swap size can be always utilized fully.
                                  Default = 1 (no compression).
+  - `ro.lmk.swap_compression_ratio_div`: divisor to use in combination with
+                                 swap_compression_ratio when estimating how much
+                                 data can be swapped.
+                                 Default = 1
   - `ro.lmk.lowmem_min_oom_score`: min oom_score_adj level used to select processes
                                  to kill when memory is critically low. Setting it
                                  to 1001 will prevent any kills for this reason. Min
@@ -114,6 +118,14 @@ properties:
                                  be more aggressive. When changing this value,
                                  consider scaling `psi_{partial, complete}_stall_ms`
                                  values accordingly.
+  - `ro.lmk.relaxed_available_memory`: flag to relax the definition of available
+                                 memory in swap_compression_ratio's calculation.
+                                 When this flag is not set, only free pages and
+                                 easily reclaimable pages are considered
+                                 available. When set, all memory that can be
+                                 reclaimed without writing to disk is considered
+                                 available.
+                                 Default = false
 
 lmkd will set the following Android properties according to current system
 configurations:
