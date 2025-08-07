@@ -105,7 +105,7 @@ pub fn init_psi_monitor(
         .context("Failed to open PSI monitor file")?;
     let stall_type = stall_type.stall_type();
 
-    let config_str = format!("{} {} {}", stall_type, threshold_us, window_us);
+    let config_str = format!("{stall_type} {threshold_us} {window_us}");
     if !(50_000..=1_000_000).contains(&threshold_us) {
         return Err(anyhow!(
             "Stall threshold out of bounds.
@@ -122,8 +122,7 @@ pub fn init_psi_monitor(
         ));
     }
 
-    file.write(config_str.as_bytes())
-        .context("failed to write config to PSI monitor")?;
+    file.write(config_str.as_bytes()).context("failed to write config to PSI monitor")?;
 
     Ok(file)
 }
@@ -139,9 +138,7 @@ pub fn init_psi_monitor(
 /// A `Result` indicating success or an `Error` on failure.
 pub fn register_psi_monitor(epoll: &Epoll, fd: BorrowedFd, data: u64) -> Result<()> {
     let event = EpollEvent::new(EpollFlags::EPOLLPRI, data);
-    epoll
-        .add(fd, event)
-        .context("failed to register psi monitor")
+    epoll.add(fd, event).context("failed to register psi monitor")
 }
 
 /// Unregisters a PSI monitor file descriptor from an epoll instance.
@@ -195,7 +192,7 @@ pub fn parse_psi_line(line: &str, stall_type: PsiStallType) -> Result<PsiStats> 
         } else if let Some(rest) = part.strip_prefix("total=") {
             new_stats.total = rest.parse::<u64>().context("Failed to parse total")?;
         } else {
-            warn!("unrecognized part: {}", part);
+            warn!("unrecognized part: {part}");
         }
     }
 
