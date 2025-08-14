@@ -3422,30 +3422,6 @@ static void destroy_mp_psi(enum vmpressure_level level) {
     mpevfd[level] = -1;
 }
 
-enum class MemcgVersion {
-    kNotFound,
-    kV1,
-    kV2,
-};
-
-static MemcgVersion __memcg_version() {
-    std::string cgroupv2_path, memcg_path;
-
-    if (!CgroupGetControllerPath("memory", &memcg_path)) {
-        return MemcgVersion::kNotFound;
-    }
-    return CgroupGetControllerPath(CGROUPV2_HIERARCHY_NAME, &cgroupv2_path) &&
-                           cgroupv2_path == memcg_path
-                   ? MemcgVersion::kV2
-                   : MemcgVersion::kV1;
-}
-
-static MemcgVersion memcg_version() {
-    static MemcgVersion version = __memcg_version();
-
-    return version;
-}
-
 static void memevent_listener_notification(int data __unused, uint32_t events __unused,
                                            struct polling_params* poll_params) {
     struct timespec curr_tm;

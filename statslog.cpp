@@ -36,6 +36,24 @@
 #include <lmkd.h>
 #include <processgroup/processgroup.h>
 
+static MemcgVersion __memcg_version() {
+    std::string cgroupv2_path, memcg_path;
+
+    if (!CgroupGetControllerPath("memory", &memcg_path)) {
+        return MemcgVersion::kNotFound;
+    }
+    return CgroupGetControllerPath(CGROUPV2_HIERARCHY_NAME, &cgroupv2_path) &&
+                           cgroupv2_path == memcg_path
+                   ? MemcgVersion::kV2
+                   : MemcgVersion::kV1;
+}
+
+MemcgVersion memcg_version() {
+    static MemcgVersion version = __memcg_version();
+
+    return version;
+}
+
 #ifdef LMKD_LOG_STATS
 
 /**
@@ -75,6 +93,16 @@ static void memory_stat_parse_line(const char* line, struct memory_stat* mem_st)
     }
 
     if (strcmp(key, "total_") < 0) {
+        return;
+    }
+
+    if (memcg_version() == MemcgVersion::kV2) {
+        if (!strcmp(key, "pgfault"))
+            mem_st->pgfault = value;
+        else if (!strcmp(key, "pgmajfault"))
+            mem_st->pgmajfault = value;
+        else if (!strcmp(key, "file"))
+            mem_st->cache_in_bytes = value;
         return;
     }
 
@@ -156,6 +184,10 @@ struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t ui
 
     if (per_app_memcg) {
         if (memory_stat_from_cgroup(&mem_st, pid, uid) == 0) {
+            if (memcg_version() == MemcgVersion::kV2) {
+                mem_st.rss_in_bytes = rss_bytes;
+                mem_st.swap_in_bytes = swap_bytes;
+            }
             return &mem_st;
         }
     }
