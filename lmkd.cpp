@@ -2141,6 +2141,17 @@ struct kill_info {
     int max_thrashing;
 };
 
+static void android_log_write_meminfo_field(android_log_context ctx, union meminfo* const mi,
+                                            meminfo_field field) {
+    android_log_write_int32(ctx, mi ? std::min(mi->arr[field] * page_k, (int64_t)INT32_MAX) : 0);
+}
+
+/*
+ * Logs 'killinfo' event.
+ *
+ * IMPORTANT: logging here (order, types, etc.) MUST always be in sync with 'killinfo'
+ * definition in event.logtags.
+ */
 static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
                          int swap_kb, struct kill_info *ki, union meminfo *mi,
                          struct wakeup_info *wi, struct timespec *tm, struct psi_data *pd) {
@@ -2152,11 +2163,26 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, std::min(rss_kb, (int)INT32_MAX));
     android_log_write_int32(ctx, ki ? ki->kill_reason : NONE);
 
-    /* log meminfo fields */
-    for (int field_idx = 0; field_idx < MI_FIELD_COUNT; field_idx++) {
-        android_log_write_int32(ctx,
-                                mi ? std::min(mi->arr[field_idx] * page_k, (int64_t)INT32_MAX) : 0);
-    }
+    /* log meminfo fields as specified by event.logtags */
+    android_log_write_meminfo_field(ctx, mi, MI_NR_FREE_PAGES);
+    android_log_write_meminfo_field(ctx, mi, MI_CACHED);
+    android_log_write_meminfo_field(ctx, mi, MI_SWAP_CACHED);
+    android_log_write_meminfo_field(ctx, mi, MI_BUFFERS);
+    android_log_write_meminfo_field(ctx, mi, MI_SHMEM);
+    android_log_write_meminfo_field(ctx, mi, MI_UNEVICTABLE);
+    android_log_write_meminfo_field(ctx, mi, MI_TOTAL_SWAP);
+    android_log_write_meminfo_field(ctx, mi, MI_FREE_SWAP);
+    android_log_write_meminfo_field(ctx, mi, MI_ACTIVE_ANON);
+    android_log_write_meminfo_field(ctx, mi, MI_INACTIVE_ANON);
+    android_log_write_meminfo_field(ctx, mi, MI_ACTIVE_FILE);
+    android_log_write_meminfo_field(ctx, mi, MI_INACTIVE_FILE);
+    android_log_write_meminfo_field(ctx, mi, MI_SRECLAIMABLE);
+    android_log_write_meminfo_field(ctx, mi, MI_SUNRECLAIM);
+    android_log_write_meminfo_field(ctx, mi, MI_KERNEL_STACK);
+    android_log_write_meminfo_field(ctx, mi, MI_PAGE_TABLES);
+    android_log_write_meminfo_field(ctx, mi, MI_ION_HELP);
+    android_log_write_meminfo_field(ctx, mi, MI_ION_HELP_POOL);
+    android_log_write_meminfo_field(ctx, mi, MI_CMA_FREE);
 
     /* log lmkd wakeup information */
     if (wi) {
