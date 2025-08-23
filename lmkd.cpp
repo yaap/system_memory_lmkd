@@ -551,7 +551,7 @@ static std::shared_mutex adjslot_list_lock;
 // adjslot_list_lock. Readers from non-main threads should hold adjslot_list_lock shared lock.
 static struct adjslot_list procadjslot_list[ADJTOSLOT_COUNT];
 
-#define MAX_DISTINCT_OOM_ADJ 32
+#define MAX_DISTINCT_OOM_ADJ 64
 #define KILLCNT_INVALID_IDX 0xFF
 /*
  * Because killcnt array is sparse a two-level indirection is used
