@@ -576,6 +576,12 @@ static bool init_monitors();
 static void destroy_monitors();
 static void init_memevent();
 
+static inline bool can_read_aconfig_flags(void)
+{
+    // Avoid reading aconfig flags until boot is complete
+    return boot_completed_handled;
+}
+
 static int clamp(int low, int high, int value) {
     return std::max(std::min(value, high), low);
 }
@@ -1127,7 +1133,7 @@ static bool read_proc_dmabuf_stat(const char *filename, int pid, char *buf, size
     ssize_t size;
     int fd;
 
-    if (!lmkd_use_dmabuf_size()) return false;
+    if (!can_read_aconfig_flags() || !lmkd_use_dmabuf_size()) return false;
 
     snprintf(path, PROCFS_PATH_MAX, "/proc/%d/%s", pid, filename);
     fd = TEMP_FAILURE_RETRY(open(path, O_RDONLY | O_CLOEXEC));
