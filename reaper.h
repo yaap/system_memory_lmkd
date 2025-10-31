@@ -18,6 +18,7 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 class Reaper {
@@ -33,28 +34,25 @@ private:
     std::condition_variable cond_;
     // mutex_ protects queue_ and active_requests_ access.
     std::vector<struct target_proc> queue_;
-    int active_requests_;
+    unsigned int active_requests_ = 0;
     // write side of the pipe to communicate kill failures with the main thread
     int comm_fd_;
-    int thread_cnt_;
-    pthread_t* thread_pool_;
-    bool debug_enabled_;
+    std::vector<std::thread> thread_pool_;
+    bool debug_enabled_ = false;
 
     bool async_kill(const struct target_proc& target);
-public:
-    Reaper() : active_requests_(0), thread_cnt_(0), debug_enabled_(false) {}
-
-    static bool is_reaping_supported();
-
-    bool init(int comm_fd);
-    int thread_cnt() const { return thread_cnt_; }
-    void enable_debug(bool enable) { debug_enabled_ = enable; }
-    bool debug_enabled() const { return debug_enabled_; }
-
-    // return 0 on success or error code returned by the syscall
-    int kill(const struct target_proc& target, bool synchronous);
-    // below members are used only by reaper_main
+    void reaper_main();
     target_proc dequeue_request();
     void request_complete();
     void notify_kill_failure(int pid);
+    bool debug_enabled() const { return debug_enabled_; }
+public:
+    static bool is_reaping_supported();
+
+    bool init(int comm_fd);
+    int thread_cnt() const { return thread_pool_.size(); }
+    void enable_debug(bool enable) { debug_enabled_ = enable; }
+
+    // return 0 on success or error code returned by the syscall
+    int kill(const struct target_proc& target, bool synchronous);
 };

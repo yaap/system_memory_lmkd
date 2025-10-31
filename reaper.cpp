@@ -88,8 +88,7 @@ static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std
     closedir(d);
 }
 
-static void* reaper_main(void* param) {
-    Reaper *reaper = static_cast<Reaper*>(param);
+void Reaper::reaper_main() {
     struct timespec start_tm, end_tm;
     struct Reaper::target_proc target;
     pid_t tid = gettid();
@@ -104,15 +103,15 @@ static void* reaper_main(void* param) {
     }
 
     for (;;) {
-        target = reaper->dequeue_request();
+        target = dequeue_request();
 
-        if (reaper->debug_enabled()) {
+        if (debug_enabled()) {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &start_tm);
         }
 
         if (pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0)) {
             // Inform the main thread about failure to kill
-            reaper->notify_kill_failure(target.pid);
+            notify_kill_failure(target.pid);
             goto done;
         }
 
@@ -124,7 +123,7 @@ static void* reaper_main(void* param) {
             ALOGE("process_mrelease %d failed: %s", target.pid, strerror(errno));
             goto done;
         }
-        if (reaper->debug_enabled()) {
+        if (debug_enabled()) {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &end_tm);
             ALOGI("Process %d was reaped in %ldms", target.pid,
                   get_time_diff_ms(&start_tm, &end_tm));
@@ -132,10 +131,8 @@ static void* reaper_main(void* param) {
 
 done:
         close(target.pidfd);
-        reaper->request_complete();
+        request_complete();
     }
-
-    return NULL;
 }
 
 bool Reaper::is_reaping_supported() {
@@ -161,33 +158,25 @@ bool Reaper::init(int comm_fd) {
         .sched_priority = 0,
     };
 
-    if (thread_cnt_ > 0) {
+    if (!thread_pool_.empty()) {
         // init should not be called multiple times
         return false;
     }
 
-    thread_pool_ = new pthread_t[THREAD_POOL_SIZE];
+    thread_pool_.reserve(THREAD_POOL_SIZE);
     for (int i = 0; i < THREAD_POOL_SIZE; i++) {
-        if (pthread_create(&thread_pool_[thread_cnt_], NULL, reaper_main, this)) {
-            ALOGE("pthread_create failed: %s", strerror(errno));
-            continue;
-        }
-        if (pthread_setschedparam(thread_pool_[thread_cnt_], SCHED_OTHER, &param)) {
+        thread_pool_.push_back(std::thread(&Reaper::reaper_main, this));
+
+        if (pthread_setschedparam(thread_pool_.back().native_handle(), SCHED_OTHER, &param)) {
             ALOGW("set SCHED_OTHER failed %s", strerror(errno));
         }
-        snprintf(name, sizeof(name), "lmkd_reaper%d", thread_cnt_);
-        if (pthread_setname_np(thread_pool_[thread_cnt_], name)) {
+        snprintf(name, sizeof(name), "lmkd_reaper%d", i);
+        if (pthread_setname_np(thread_pool_.back().native_handle(), name)) {
             ALOGW("pthread_setname_np failed: %s", strerror(errno));
         }
-        thread_cnt_++;
     }
 
-    if (!thread_cnt_) {
-        delete[] thread_pool_;
-        return false;
-    }
-
-    queue_.reserve(thread_cnt_);
+    queue_.reserve(thread_pool_.size());
     comm_fd_ = comm_fd;
     return true;
 }
@@ -197,12 +186,12 @@ bool Reaper::async_kill(const struct target_proc& target) {
         return false;
     }
 
-    if (!thread_cnt_) {
+    if (thread_pool_.empty()) {
         return false;
     }
 
     mutex_.lock();
-    if (active_requests_ >= thread_cnt_) {
+    if (active_requests_ >= thread_pool_.size()) {
         mutex_.unlock();
         return false;
     }
