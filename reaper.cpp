@@ -85,6 +85,27 @@ static void set_process_group_and_prio(uid_t uid, pid_t pid,
     closedir(d);
 }
 
+void Reaper::victim_priority_setter() {
+    pid_t tid = gettid();
+
+    // Ensure the thread does not use little cores
+    if (!SetTaskProfiles(tid, {"CPUSET_SP_FOREGROUND"}, true)) {
+        ALOGE("Failed to assign cpuset to the priority setter thread");
+    }
+
+    if (setpriority(PRIO_PROCESS, tid, ANDROID_PRIORITY_HIGHEST)) {
+        ALOGW("Unable to raise priority of the priority setter thread (%d): errno=%d", tid, errno);
+    }
+
+    for (;;) {
+        auto [uid, pid] = setprio_queue_.pop();
+
+        set_process_group_and_prio(uid, pid,
+                                   {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+                                   ANDROID_PRIORITY_NORMAL);
+    }
+}
+
 void Reaper::reaper_main() {
     struct timespec start_tm, end_tm;
     pid_t tid = gettid();
@@ -111,9 +132,7 @@ void Reaper::reaper_main() {
             goto done;
         }
 
-        set_process_group_and_prio(target.uid, target.pid,
-                                   {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
-                                   ANDROID_PRIORITY_NORMAL);
+        setprio_queue_.push({target.uid, target.pid});
 
         if (process_mrelease(target.pidfd, 0)) {
             ALOGE("process_mrelease %d failed: %s", target.pid, strerror(errno));
@@ -157,6 +176,13 @@ bool Reaper::init(int comm_fd) {
     if (!thread_pool_.empty()) {
         // init should not be called multiple times
         return false;
+    }
+
+    // The work in this thread is serialized in the kernel because of the cgroup mutex,
+    // so only one thread even if there are multiple reapers.
+    setprio_thread_ = std::thread(&Reaper::victim_priority_setter, this);
+    if (pthread_setschedparam(setprio_thread_.native_handle(), SCHED_OTHER, &param)) {
+        ALOGW("set SCHED_OTHER failed %s", strerror(errno));
     }
 
     thread_pool_.reserve(THREAD_POOL_SIZE);

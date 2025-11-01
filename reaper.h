@@ -19,6 +19,7 @@
 #include <sys/types.h>
 
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "threadsafe_queue.h"
@@ -38,8 +39,12 @@ private:
     std::vector<std::thread> thread_pool_;
     bool debug_enabled_ = false;
 
+    ThreadsafeQueue<std::pair<uid_t, pid_t>> setprio_queue_;
+    std::thread setprio_thread_;
+
     bool async_kill(const struct target_proc& target);
     void reaper_main();
+    void victim_priority_setter();
     void notify_kill_failure(pid_t pid);
     bool debug_enabled() const { return debug_enabled_; }
 public:
