@@ -27,7 +27,7 @@ class Reaper {
 public:
     struct target_proc {
         int pidfd;
-        int pid;
+        pid_t pid;
         uid_t uid;
     };
 private:
@@ -46,7 +46,7 @@ private:
     void reaper_main();
     target_proc dequeue_request();
     void request_complete();
-    void notify_kill_failure(int pid);
+    void notify_kill_failure(pid_t pid);
     bool debug_enabled() const { return debug_enabled_; }
 public:
     static bool is_reaping_supported();

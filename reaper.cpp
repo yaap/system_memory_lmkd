@@ -49,8 +49,8 @@ static inline long get_time_diff_ms(struct timespec *from,
            (to->tv_nsec - from->tv_nsec) / (long)NS_PER_MS;
 }
 
-static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std::string>& profiles,
-                                       int prio) {
+static void set_process_group_and_prio(uid_t uid, pid_t pid,
+                                       const std::vector<std::string>& profiles, int prio) {
     DIR* d;
     char proc_path[PATH_MAX];
     struct dirent* de;
@@ -67,7 +67,7 @@ static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std
     }
 
     while ((de = readdir(d))) {
-        int t_pid;
+        pid_t t_pid;
 
         if (de->d_name[0] == '.') continue;
         t_pid = atoi(de->d_name);
@@ -240,7 +240,7 @@ void Reaper::request_complete() {
     active_requests_--;
 }
 
-void Reaper::notify_kill_failure(int pid) {
+void Reaper::notify_kill_failure(pid_t pid) {
     std::scoped_lock<std::mutex> lock(mutex_);
 
     ALOGE("Failed to kill process %d", pid);
