@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <sys/types.h>
+
 #include <condition_variable>
 #include <mutex>
 #include <thread>

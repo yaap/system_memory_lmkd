@@ -18,19 +18,15 @@
 
 #include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <log/log.h>
-#include <signal.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/epoll.h>
 #include <sys/pidfd.h>
 #include <sys/resource.h>
-#include <sys/sysinfo.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
+#include <log/log.h>
 #include <processgroup/processgroup.h>
 #include <system/thread_defs.h>
 
