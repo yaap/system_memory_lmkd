@@ -26,6 +26,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <mutex>
+
 #include <log/log.h>
 #include <processgroup/processgroup.h>
 #include <system/thread_defs.h>
@@ -33,7 +35,6 @@
 #include "reaper.h"
 
 #define NS_PER_MS (NS_PER_SEC / MS_PER_SEC)
-#define THREAD_POOL_SIZE 2
 
 #ifndef __NR_process_mrelease
 #define __NR_process_mrelease 448
@@ -86,7 +87,6 @@ static void set_process_group_and_prio(uid_t uid, pid_t pid,
 
 void Reaper::reaper_main() {
     struct timespec start_tm, end_tm;
-    struct Reaper::target_proc target;
     pid_t tid = gettid();
 
     // Ensure the thread does not use little cores
@@ -99,7 +99,7 @@ void Reaper::reaper_main() {
     }
 
     for (;;) {
-        target = dequeue_request();
+        Reaper::target_proc target = reap_queue_.pop();
 
         if (debug_enabled()) {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &start_tm);
@@ -127,7 +127,7 @@ void Reaper::reaper_main() {
 
 done:
         close(target.pidfd);
-        request_complete();
+        reap_queue_.request_complete();
     }
 }
 
@@ -160,7 +160,7 @@ bool Reaper::init(int comm_fd) {
     }
 
     thread_pool_.reserve(THREAD_POOL_SIZE);
-    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+    for (unsigned int i = 0; i < THREAD_POOL_SIZE; i++) {
         thread_pool_.push_back(std::thread(&Reaper::reaper_main, this));
 
         if (pthread_setschedparam(thread_pool_.back().native_handle(), SCHED_OTHER, &param)) {
@@ -172,7 +172,6 @@ bool Reaper::init(int comm_fd) {
         }
     }
 
-    queue_.reserve(thread_pool_.size());
     comm_fd_ = comm_fd;
     return true;
 }
@@ -186,21 +185,13 @@ bool Reaper::async_kill(const struct target_proc& target) {
         return false;
     }
 
-    mutex_.lock();
-    if (active_requests_ >= thread_pool_.size()) {
-        mutex_.unlock();
-        return false;
-    }
-    active_requests_++;
-
     // Duplicate pidfd instead of reusing the original one to avoid synchronization and refcounting
     // when both reaper and main threads are using or closing the pidfd
-    queue_.push_back({ dup(target.pidfd), target.pid, target.uid });
-    // Wake up a reaper thread
-    cond_.notify_one();
-    mutex_.unlock();
+    int pidfd = dup(target.pidfd);
+    bool ret = reap_queue_.push({pidfd, target.pid, target.uid});
+    if (!ret) close(pidfd);
 
-    return true;
+    return ret;
 }
 
 int Reaper::kill(const struct target_proc& target, bool synchronous) {
@@ -217,26 +208,9 @@ int Reaper::kill(const struct target_proc& target, bool synchronous) {
     return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
 }
 
-Reaper::target_proc Reaper::dequeue_request() {
-    struct target_proc target;
-    std::unique_lock<std::mutex> lock(mutex_);
-
-    while (queue_.empty()) {
-        cond_.wait(lock);
-    }
-    target = queue_.back();
-    queue_.pop_back();
-
-    return target;
-}
-
-void Reaper::request_complete() {
-    std::scoped_lock<std::mutex> lock(mutex_);
-    active_requests_--;
-}
-
 void Reaper::notify_kill_failure(pid_t pid) {
-    std::scoped_lock<std::mutex> lock(mutex_);
+    static std::mutex mtx;
+    std::scoped_lock lock(mtx);
 
     ALOGE("Failed to kill process %d", pid);
     if (TEMP_FAILURE_RETRY(write(comm_fd_, &pid, sizeof(pid))) != sizeof(pid)) {

@@ -18,10 +18,10 @@
 
 #include <sys/types.h>
 
-#include <condition_variable>
-#include <mutex>
 #include <thread>
 #include <vector>
+
+#include "threadsafe_queue.h"
 
 class Reaper {
 public:
@@ -31,12 +31,8 @@ public:
         uid_t uid;
     };
 private:
-    // mutex_ and cond_ are used to wakeup the reaper thread.
-    std::mutex mutex_;
-    std::condition_variable cond_;
-    // mutex_ protects queue_ and active_requests_ access.
-    std::vector<struct target_proc> queue_;
-    unsigned int active_requests_ = 0;
+    static constexpr size_t THREAD_POOL_SIZE = 2;
+    ThreadsafeQueue<target_proc> reap_queue_;
     // write side of the pipe to communicate kill failures with the main thread
     int comm_fd_;
     std::vector<std::thread> thread_pool_;
@@ -44,11 +40,10 @@ private:
 
     bool async_kill(const struct target_proc& target);
     void reaper_main();
-    target_proc dequeue_request();
-    void request_complete();
     void notify_kill_failure(pid_t pid);
     bool debug_enabled() const { return debug_enabled_; }
 public:
+    Reaper() : reap_queue_(THREAD_POOL_SIZE) {}
     static bool is_reaping_supported();
 
     bool init(int comm_fd);
