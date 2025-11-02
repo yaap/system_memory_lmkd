@@ -214,12 +214,7 @@ int Reaper::kill(const struct target_proc& target, bool synchronous) {
         return 0;
     }
 
-    int result = pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
-    if (result) {
-        return result;
-    }
-
-    return 0;
+    return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
 }
 
 Reaper::target_proc Reaper::dequeue_request() {
