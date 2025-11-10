@@ -18,26 +18,23 @@
 
 #include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <log/log.h>
-#include <signal.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/epoll.h>
 #include <sys/pidfd.h>
 #include <sys/resource.h>
-#include <sys/sysinfo.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
+#include <mutex>
+
+#include <log/log.h>
 #include <processgroup/processgroup.h>
 #include <system/thread_defs.h>
 
 #include "reaper.h"
 
 #define NS_PER_MS (NS_PER_SEC / MS_PER_SEC)
-#define THREAD_POOL_SIZE 2
 
 #ifndef __NR_process_mrelease
 #define __NR_process_mrelease 448
@@ -53,8 +50,8 @@ static inline long get_time_diff_ms(struct timespec *from,
            (to->tv_nsec - from->tv_nsec) / (long)NS_PER_MS;
 }
 
-static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std::string>& profiles,
-                                       int prio) {
+static void set_process_group_and_prio(uid_t uid, pid_t pid,
+                                       const std::vector<std::string>& profiles, int prio) {
     DIR* d;
     char proc_path[PATH_MAX];
     struct dirent* de;
@@ -71,7 +68,7 @@ static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std
     }
 
     while ((de = readdir(d))) {
-        int t_pid;
+        pid_t t_pid;
 
         if (de->d_name[0] == '.') continue;
         t_pid = atoi(de->d_name);
@@ -88,10 +85,29 @@ static void set_process_group_and_prio(uid_t uid, int pid, const std::vector<std
     closedir(d);
 }
 
-static void* reaper_main(void* param) {
-    Reaper *reaper = static_cast<Reaper*>(param);
+void Reaper::victim_priority_setter() {
+    pid_t tid = gettid();
+
+    // Ensure the thread does not use little cores
+    if (!SetTaskProfiles(tid, {"CPUSET_SP_FOREGROUND"}, true)) {
+        ALOGE("Failed to assign cpuset to the priority setter thread");
+    }
+
+    if (setpriority(PRIO_PROCESS, tid, ANDROID_PRIORITY_HIGHEST)) {
+        ALOGW("Unable to raise priority of the priority setter thread (%d): errno=%d", tid, errno);
+    }
+
+    for (;;) {
+        auto [uid, pid] = setprio_queue_.pop();
+
+        set_process_group_and_prio(uid, pid,
+                                   {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+                                   ANDROID_PRIORITY_NORMAL);
+    }
+}
+
+void Reaper::reaper_main() {
     struct timespec start_tm, end_tm;
-    struct Reaper::target_proc target;
     pid_t tid = gettid();
 
     // Ensure the thread does not use little cores
@@ -104,27 +120,25 @@ static void* reaper_main(void* param) {
     }
 
     for (;;) {
-        target = reaper->dequeue_request();
+        Reaper::target_proc target = reap_queue_.pop();
 
-        if (reaper->debug_enabled()) {
+        if (debug_enabled()) {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &start_tm);
         }
 
         if (pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0)) {
             // Inform the main thread about failure to kill
-            reaper->notify_kill_failure(target.pid);
+            notify_kill_failure(target.pid);
             goto done;
         }
 
-        set_process_group_and_prio(target.uid, target.pid,
-                                   {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
-                                   ANDROID_PRIORITY_NORMAL);
+        setprio_queue_.push({target.uid, target.pid});
 
         if (process_mrelease(target.pidfd, 0)) {
             ALOGE("process_mrelease %d failed: %s", target.pid, strerror(errno));
             goto done;
         }
-        if (reaper->debug_enabled()) {
+        if (debug_enabled()) {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &end_tm);
             ALOGI("Process %d was reaped in %ldms", target.pid,
                   get_time_diff_ms(&start_tm, &end_tm));
@@ -132,10 +146,8 @@ static void* reaper_main(void* param) {
 
 done:
         close(target.pidfd);
-        reaper->request_complete();
+        reap_queue_.request_complete();
     }
-
-    return NULL;
 }
 
 bool Reaper::is_reaping_supported() {
@@ -161,34 +173,31 @@ bool Reaper::init(int comm_fd) {
         .sched_priority = 0,
     };
 
-    if (thread_cnt_ > 0) {
+    if (!thread_pool_.empty()) {
         // init should not be called multiple times
         return false;
     }
 
-    thread_pool_ = new pthread_t[THREAD_POOL_SIZE];
-    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
-        if (pthread_create(&thread_pool_[thread_cnt_], NULL, reaper_main, this)) {
-            ALOGE("pthread_create failed: %s", strerror(errno));
-            continue;
+    // The work in this thread is serialized in the kernel because of the cgroup mutex,
+    // so only one thread even if there are multiple reapers.
+    setprio_thread_ = std::thread(&Reaper::victim_priority_setter, this);
+    if (pthread_setschedparam(setprio_thread_.native_handle(), SCHED_OTHER, &param)) {
+        ALOGW("set SCHED_OTHER failed %s", strerror(errno));
+    }
+
+    thread_pool_.reserve(THREAD_POOL_SIZE);
+    for (unsigned int i = 0; i < THREAD_POOL_SIZE; i++) {
+        thread_pool_.push_back(std::thread(&Reaper::reaper_main, this));
+
+        if (pthread_setschedparam(thread_pool_.back().native_handle(), SCHED_OTHER, &param)) {
+            ALOGW("set SCHED_OTHER failed %s", strerror(errno));
         }
-        // set normal scheduling policy for the reaper thread
-        if (pthread_setschedparam(thread_pool_[thread_cnt_], SCHED_OTHER, &param)) {
-            ALOGW("set SCHED_FIFO failed %s", strerror(errno));
-        }
-        snprintf(name, sizeof(name), "lmkd_reaper%d", thread_cnt_);
-        if (pthread_setname_np(thread_pool_[thread_cnt_], name)) {
+        snprintf(name, sizeof(name), "lmkd_reaper%d", i);
+        if (pthread_setname_np(thread_pool_.back().native_handle(), name)) {
             ALOGW("pthread_setname_np failed: %s", strerror(errno));
         }
-        thread_cnt_++;
     }
 
-    if (!thread_cnt_) {
-        delete[] thread_pool_;
-        return false;
-    }
-
-    queue_.reserve(thread_cnt_);
     comm_fd_ = comm_fd;
     return true;
 }
@@ -198,25 +207,17 @@ bool Reaper::async_kill(const struct target_proc& target) {
         return false;
     }
 
-    if (!thread_cnt_) {
+    if (thread_pool_.empty()) {
         return false;
     }
-
-    mutex_.lock();
-    if (active_requests_ >= thread_cnt_) {
-        mutex_.unlock();
-        return false;
-    }
-    active_requests_++;
 
     // Duplicate pidfd instead of reusing the original one to avoid synchronization and refcounting
     // when both reaper and main threads are using or closing the pidfd
-    queue_.push_back({ dup(target.pidfd), target.pid, target.uid });
-    // Wake up a reaper thread
-    cond_.notify_one();
-    mutex_.unlock();
+    int pidfd = dup(target.pidfd);
+    bool ret = reap_queue_.push({pidfd, target.pid, target.uid});
+    if (!ret) close(pidfd);
 
-    return true;
+    return ret;
 }
 
 int Reaper::kill(const struct target_proc& target, bool synchronous) {
@@ -230,34 +231,12 @@ int Reaper::kill(const struct target_proc& target, bool synchronous) {
         return 0;
     }
 
-    int result = pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
-    if (result) {
-        return result;
-    }
-
-    return 0;
+    return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
 }
 
-Reaper::target_proc Reaper::dequeue_request() {
-    struct target_proc target;
-    std::unique_lock<std::mutex> lock(mutex_);
-
-    while (queue_.empty()) {
-        cond_.wait(lock);
-    }
-    target = queue_.back();
-    queue_.pop_back();
-
-    return target;
-}
-
-void Reaper::request_complete() {
-    std::scoped_lock<std::mutex> lock(mutex_);
-    active_requests_--;
-}
-
-void Reaper::notify_kill_failure(int pid) {
-    std::scoped_lock<std::mutex> lock(mutex_);
+void Reaper::notify_kill_failure(pid_t pid) {
+    static std::mutex mtx;
+    std::scoped_lock lock(mtx);
 
     ALOGE("Failed to kill process %d", pid);
     if (TEMP_FAILURE_RETRY(write(comm_fd_, &pid, sizeof(pid))) != sizeof(pid)) {
