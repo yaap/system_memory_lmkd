@@ -32,13 +32,11 @@
 
 #include <string>
 
+#include <android-base/stringify.h>
 #include <lmkd.h>
 #include <processgroup/processgroup.h>
 
 #ifdef LMKD_LOG_STATS
-
-#define STRINGIFY(x) STRINGIFY_INTERNAL(x)
-#define STRINGIFY_INTERNAL(x) #x
 
 /**
  * Used to make sure that the payload is always smaller than LMKD_REPLY_MAX_SIZE
@@ -72,7 +70,9 @@ static void memory_stat_parse_line(const char* line, struct memory_stat* mem_st)
     char key[MAX_TASKNAME_LEN + 1];
     int64_t value;
 
-    sscanf(line, "%" STRINGIFY(MAX_TASKNAME_LEN) "s  %" SCNd64 "", key, &value);
+    if (sscanf(line, "%" STRINGIFY(MAX_TASKNAME_LEN) "s  %" SCNd64 "", key, &value) != 2) {
+        return;
+    }
 
     if (strcmp(key, "total_") < 0) {
         return;

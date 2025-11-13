@@ -41,6 +41,7 @@
 #include <vector>
 
 #include <BpfSyscallWrappers.h>
+#include <android-base/stringify.h>
 #include <android-base/unique_fd.h>
 #include <bpf/WaitForProgsLoaded.h>
 #include <cutils/properties.h>
@@ -60,29 +61,8 @@
 #include "statslog.h"
 #include "watchdog.h"
 
-/*
- * Define LMKD_TRACE_KILLS to record lmkd kills in kernel traces
- * to profile and correlate with OOM kills
- */
-#ifdef LMKD_TRACE_KILLS
-
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #include <cutils/trace.h>
-
-static inline void trace_kill_start(const char *desc) {
-    ATRACE_BEGIN(desc);
-}
-
-static inline void trace_kill_end() {
-    ATRACE_END();
-}
-
-#else /* LMKD_TRACE_KILLS */
-
-static inline void trace_kill_start(const char *) {}
-static inline void trace_kill_end() {}
-
-#endif /* LMKD_TRACE_KILLS */
 
 #ifndef __unused
 #define __unused __attribute__((__unused__))
@@ -116,9 +96,6 @@ static inline void trace_kill_end() {}
 
 /* Defined as ProcessList.SYSTEM_ADJ in ProcessList.java */
 #define SYSTEM_ADJ (-900)
-
-#define STRINGIFY(x) STRINGIFY_INTERNAL(x)
-#define STRINGIFY_INTERNAL(x) #x
 
 #define PROCFS_PATH_MAX 64
 
@@ -583,7 +560,7 @@ static long page_k; /* page size in kB */
 static bool update_props();
 static bool init_monitors();
 static void destroy_monitors();
-static bool init_memevent_listener_monitoring();
+static void init_memevent();
 
 static int clamp(int low, int high, int value) {
     return std::max(std::min(value, high), low);
@@ -1629,15 +1606,7 @@ static void ctrl_command_handler(int dsock_idx) {
              * Initialize the memevent listener after boot is completed to prevent
              * waiting, during boot-up, for BPF programs to be loaded.
              */
-            if (init_memevent_listener_monitoring()) {
-                ALOGI("Using memevents for direct reclaim and kswapd detection");
-            } else {
-                ALOGI("Using vmstats for direct reclaim and kswapd detection");
-                if (direct_reclaim_threshold_ms > 0) {
-                    ALOGW("Kernel support for direct_reclaim_threshold_ms is not found");
-                    direct_reclaim_threshold_ms = 0;
-                }
-            }
+            init_memevent();
             result = 0;
             boot_completed_handled = true;
         }
@@ -2476,13 +2445,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
       ALOGI("Skipping kill; %ld kB freed elsewhere.", result * page_k);
       return result;
     }
-
-    trace_kill_start(desc);
-
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
     kill_result = reaper.kill({ pidfd, pid, uid }, false);
-
-    trace_kill_end();
 
     if (kill_result) {
         stop_wait_for_proc_kill(false);
@@ -2490,7 +2454,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         /* Delete process record even when we fail to kill so that we don't get stuck on it */
         goto out;
     }
-
+    ATRACE_INSTANT_FOR_TRACK(LOG_TAG, desc);
     last_kill_tm = *tm;
 
     inc_killcnt(procp->oomadj);
@@ -2731,6 +2695,7 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
     static int64_t prev_thrash_growth = 0;
     static bool check_filecache = false;
     static int max_thrashing = 0;
+    static bool initialized = false;
 
     union meminfo mi;
     union vmstat vs;
@@ -2812,15 +2777,18 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
         return;
     }
 
-    /* Reset states after process got killed */
-    if (killing) {
-        killing = false;
-        cycle_after_kill = true;
+    /* Initialize states the first time we get here and reset after a kill */
+    if (!initialized || killing) {
+        if (killing) {
+            killing = false;
+            cycle_after_kill = true;
+        }
         /* Reset file-backed pagecache size and refault amounts after a kill */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
         init_ws_refault = workingset_refault_file;
         thrashing_reset_tm = curr_tm;
         prev_thrash_growth = 0;
+        initialized = true;
     }
 
     /* Check free swap levels */
@@ -2887,7 +2855,17 @@ static void __mp_event_psi(enum event_source source, union psi_event_data data,
          * counter in that case to ensure a kill if a new eligible process appears.
          */
         if (windows_passed > 1 || prev_thrash_growth < thrashing_limit) {
-            prev_thrash_growth >>= windows_passed;
+            if (static_cast<size_t>(windows_passed) < 8 * sizeof(prev_thrash_growth)) {
+                prev_thrash_growth >>= windows_passed;
+            } else {
+                /*
+                 * Reset to 0 explicitly if windows_passed is too large. Shifting by a value
+                 * greater than or equal to the size of the left operand is undefined behavior,
+                 * and in practice (for example, ASR instruction on Arm) only the lowest 6 bits
+                 * are used, which can produce incorrect results.
+                 */
+                prev_thrash_growth = 0;
+            }
         }
 
         /* Record file-backed pagecache size when crossing THRASHING_RESET_INTERVAL_MS */
@@ -3042,7 +3020,7 @@ update_watermarks:
     }
 
     /* Check if a cached app should be killed */
-    if (kill_reason == NONE && wmark < WMARK_HIGH) {
+    if (kill_reason == NONE && wmark < WMARK_HIGH && lowmem_min_oom_score <= OOM_SCORE_ADJ_MAX) {
         kill_reason = LOW_MEM;
         snprintf(kill_desc, sizeof(kill_desc), "%s watermark is breached",
             wmark < WMARK_LOW ? "min" : "low");
@@ -3191,7 +3169,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 
     record_wakeup_time(&curr_tm, events ? Event : Polling, &wi);
 
-    if (kill_timeout_ms &&
+    if (kill_timeout_ms == 0 ||
         get_time_diff_ms(&last_kill_tm, &curr_tm) < static_cast<long>(kill_timeout_ms)) {
         /*
          * If we're within the no-kill timeout, see if there's pending reclaim work
@@ -3558,6 +3536,18 @@ static bool init_memevent_listener_monitoring() {
     return true;
 }
 
+static void init_memevent() {
+    if (init_memevent_listener_monitoring()) {
+        ALOGI("Using memevents for direct reclaim and kswapd detection");
+    } else {
+        ALOGI("Using vmstats for direct reclaim and kswapd detection");
+        if (direct_reclaim_threshold_ms > 0) {
+            ALOGW("Kernel support for direct_reclaim_threshold_ms is not found");
+            direct_reclaim_threshold_ms = 0;
+        }
+    }
+}
+
 static bool init_psi_monitors() {
     /*
      * When PSI is used on low-ram devices or on high-end devices without memfree levels
@@ -3890,6 +3880,14 @@ static int init(void) {
     if (!lmkd_init_hook()) {
         ALOGE("Failed to initialize LMKD hooks.");
         return -1;
+    }
+
+    /*
+     * If boot is already complete (e.g., due to an LMKD crash
+     * and restart), initialize the memevent listener now.
+     */
+    if (property_get_bool("sys.boot_completed", false)) {
+        init_memevent();
     }
 
     return 0;
