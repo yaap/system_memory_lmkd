@@ -30,6 +30,14 @@
 
 __BEGIN_DECLS
 
+enum class MemcgVersion {
+    kNotFound,
+    kV1,
+    kV2,
+};
+
+MemcgVersion memcg_version();
+
 #define MAX_TASKNAME_LEN 128
 
 /*

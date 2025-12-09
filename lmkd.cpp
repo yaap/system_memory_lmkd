@@ -110,12 +110,11 @@
         property_get_##type("ro.lmk." name, def))
 
 /*
- * PSI monitor tracking window size.
- * PSI monitor generates events at most once per window,
- * therefore we poll memory state for the duration of
- * PSI_WINDOW_SIZE_MS after the event happens.
+ * Default PSI monitor tracking window size.
+ * PSI monitor generates events at most once per window, therefore we poll
+ * memory state for the duration of the window after PSI event happens.
  */
-#define PSI_WINDOW_SIZE_MS 1000
+#define DEFAULT_PSI_WINDOW_SIZE_MS 1000
 /* Polling period after PSI signal when pressure is high */
 #define PSI_POLL_PERIOD_SHORT_MS 10
 /* Polling period after PSI signal when pressure is low */
@@ -143,6 +142,8 @@
 #define DEF_DIRECT_RECL_THRESH_MS 0
 /* ro.lmk.swap_compression_ratio property defaults */
 #define DEF_SWAP_COMP_RATIO 1
+/* ro.lmk.swap_compression_ratio_div property defaults */
+#define DEF_SWAP_COMP_RATIO_DIV 1
 /* ro.lmk.lowmem_min_oom_score defaults */
 #define DEF_LOWMEM_MIN_SCORE (PREVIOUS_APP_ADJ + 1)
 
@@ -207,6 +208,7 @@ static bool per_app_memcg;
 static int swap_free_low_percentage;
 static int psi_partial_stall_ms;
 static int psi_complete_stall_ms;
+static int psi_window_size_ms;
 static int thrashing_limit_pct;
 static int thrashing_limit_decay_pct;
 static int thrashing_critical_pct;
@@ -218,6 +220,8 @@ static int kpoll_fd;
 static bool delay_monitors_until_boot;
 static int direct_reclaim_threshold_ms;
 static int swap_compression_ratio;
+static int swap_compression_ratio_div;
+static bool relaxed_available_memory;
 static int lowmem_min_oom_score;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
     { PSI_SOME, 20 },    /* 20ms out of 1sec for partial stall */
@@ -407,9 +411,11 @@ enum meminfo_field {
     MI_ION_HELP,
     MI_ION_HELP_POOL,
     MI_CMA_FREE,
+    MI_DIRTY,
     MI_FIELD_COUNT
 };
 
+// clang-format off
 static const char* const meminfo_field_names[MI_FIELD_COUNT] = {
     "MemFree:",
     "Cached:",
@@ -430,7 +436,9 @@ static const char* const meminfo_field_names[MI_FIELD_COUNT] = {
     "ION_heap:",
     "ION_heap_pool:",
     "CmaFree:",
+    "Dirty:",
 };
+// clang-format on
 
 union meminfo {
     struct {
@@ -453,6 +461,7 @@ union meminfo {
         int64_t ion_heap;
         int64_t ion_heap_pool;
         int64_t cma_free;
+        int64_t dirty;
         /* fields below are calculated rather than read from the file */
         int64_t nr_file_pages;
         int64_t total_gpu_kb;
@@ -542,7 +551,7 @@ static std::shared_mutex adjslot_list_lock;
 // adjslot_list_lock. Readers from non-main threads should hold adjslot_list_lock shared lock.
 static struct adjslot_list procadjslot_list[ADJTOSLOT_COUNT];
 
-#define MAX_DISTINCT_OOM_ADJ 32
+#define MAX_DISTINCT_OOM_ADJ 64
 #define KILLCNT_INVALID_IDX 0xFF
 /*
  * Because killcnt array is sparse a two-level indirection is used
@@ -1956,7 +1965,23 @@ static int meminfo_parse(union meminfo *mi) {
     mi->field.nr_file_pages = mi->field.cached + mi->field.swap_cached +
         mi->field.buffers;
     mi->field.total_gpu_kb = read_gpu_total_kb();
-    mi->field.easy_available = mi->field.nr_free_pages + mi->field.inactive_file;
+
+    mi->field.easy_available = mi->field.nr_free_pages;
+    if (relaxed_available_memory && swap_compression_ratio) {
+        mi->field.easy_available += mi->field.active_file + mi->field.inactive_file;
+        mi->field.easy_available -= mi->field.dirty;
+
+        int64_t anon_pages = mi->field.active_anon + mi->field.inactive_anon;
+        /**
+         * Reclaiming anonymous memory only frees up this much memory:
+         *  anon_pages - (anon_pages / (swap_compression_ratio / swap_compression_ratio_div))
+         * After a little algebra, that becomes:
+         */
+        mi->field.easy_available += (swap_compression_ratio - swap_compression_ratio_div) *
+                                    anon_pages / swap_compression_ratio;
+    } else {
+        mi->field.easy_available += mi->field.inactive_file;
+    }
 
     return 0;
 }
@@ -1969,7 +1994,8 @@ static int meminfo_parse(union meminfo *mi) {
 // By setting swap_compression_ratio to 0, available memory can be ignored.
 static inline int64_t get_free_swap(union meminfo *mi) {
     if (swap_compression_ratio)
-        return std::min(mi->field.free_swap, mi->field.easy_available * swap_compression_ratio);
+        return std::min(mi->field.free_swap, mi->field.easy_available * swap_compression_ratio /
+                                                     swap_compression_ratio_div);
     return mi->field.free_swap;
 }
 
@@ -2115,6 +2141,17 @@ struct kill_info {
     int max_thrashing;
 };
 
+static void android_log_write_meminfo_field(android_log_context ctx, union meminfo* const mi,
+                                            meminfo_field field) {
+    android_log_write_int32(ctx, mi ? std::min(mi->arr[field] * page_k, (int64_t)INT32_MAX) : 0);
+}
+
+/*
+ * Logs 'killinfo' event.
+ *
+ * IMPORTANT: logging here (order, types, etc.) MUST always be in sync with 'killinfo'
+ * definition in event.logtags.
+ */
 static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
                          int swap_kb, struct kill_info *ki, union meminfo *mi,
                          struct wakeup_info *wi, struct timespec *tm, struct psi_data *pd) {
@@ -2126,11 +2163,26 @@ static void killinfo_log(struct proc* procp, int min_oom_score, int rss_kb,
     android_log_write_int32(ctx, std::min(rss_kb, (int)INT32_MAX));
     android_log_write_int32(ctx, ki ? ki->kill_reason : NONE);
 
-    /* log meminfo fields */
-    for (int field_idx = 0; field_idx < MI_FIELD_COUNT; field_idx++) {
-        android_log_write_int32(ctx,
-                                mi ? std::min(mi->arr[field_idx] * page_k, (int64_t)INT32_MAX) : 0);
-    }
+    /* log meminfo fields as specified by event.logtags */
+    android_log_write_meminfo_field(ctx, mi, MI_NR_FREE_PAGES);
+    android_log_write_meminfo_field(ctx, mi, MI_CACHED);
+    android_log_write_meminfo_field(ctx, mi, MI_SWAP_CACHED);
+    android_log_write_meminfo_field(ctx, mi, MI_BUFFERS);
+    android_log_write_meminfo_field(ctx, mi, MI_SHMEM);
+    android_log_write_meminfo_field(ctx, mi, MI_UNEVICTABLE);
+    android_log_write_meminfo_field(ctx, mi, MI_TOTAL_SWAP);
+    android_log_write_meminfo_field(ctx, mi, MI_FREE_SWAP);
+    android_log_write_meminfo_field(ctx, mi, MI_ACTIVE_ANON);
+    android_log_write_meminfo_field(ctx, mi, MI_INACTIVE_ANON);
+    android_log_write_meminfo_field(ctx, mi, MI_ACTIVE_FILE);
+    android_log_write_meminfo_field(ctx, mi, MI_INACTIVE_FILE);
+    android_log_write_meminfo_field(ctx, mi, MI_SRECLAIMABLE);
+    android_log_write_meminfo_field(ctx, mi, MI_SUNRECLAIM);
+    android_log_write_meminfo_field(ctx, mi, MI_KERNEL_STACK);
+    android_log_write_meminfo_field(ctx, mi, MI_PAGE_TABLES);
+    android_log_write_meminfo_field(ctx, mi, MI_ION_HELP);
+    android_log_write_meminfo_field(ctx, mi, MI_ION_HELP_POOL);
+    android_log_write_meminfo_field(ctx, mi, MI_CMA_FREE);
 
     /* log lmkd wakeup information */
     if (wi) {
@@ -3361,8 +3413,8 @@ static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
     }
 
     fd = init_psi_monitor(psi_thresholds[level].stall_type,
-        psi_thresholds[level].threshold_ms * US_PER_MS,
-        PSI_WINDOW_SIZE_MS * US_PER_MS);
+                          psi_thresholds[level].threshold_ms * US_PER_MS,
+                          psi_window_size_ms * US_PER_MS);
 
     if (fd < 0) {
         return false;
@@ -3394,30 +3446,6 @@ static void destroy_mp_psi(enum vmpressure_level level) {
     maxevents--;
     destroy_psi_monitor(fd);
     mpevfd[level] = -1;
-}
-
-enum class MemcgVersion {
-    kNotFound,
-    kV1,
-    kV2,
-};
-
-static MemcgVersion __memcg_version() {
-    std::string cgroupv2_path, memcg_path;
-
-    if (!CgroupGetControllerPath("memory", &memcg_path)) {
-        return MemcgVersion::kNotFound;
-    }
-    return CgroupGetControllerPath(CGROUPV2_HIERARCHY_NAME, &cgroupv2_path) &&
-                           cgroupv2_path == memcg_path
-                   ? MemcgVersion::kV2
-                   : MemcgVersion::kV1;
-}
-
-static MemcgVersion memcg_version() {
-    static MemcgVersion version = __memcg_version();
-
-    return version;
 }
 
 static void memevent_listener_notification(int data __unused, uint32_t events __unused,
@@ -3919,7 +3947,7 @@ static void call_handler(struct event_handler_info* handler_info,
     switch (poll_params->update) {
     case POLLING_START:
         /*
-         * Poll for the duration of PSI_WINDOW_SIZE_MS after the
+         * Poll for the duration of psi_window_size_ms after the
          * initial PSI event because psi events are rate-limited
          * at one per sec.
          */
@@ -3936,7 +3964,7 @@ static void call_handler(struct event_handler_info* handler_info,
         break;
     case POLLING_DO_NOT_CHANGE:
         if (poll_params->poll_handler &&
-            get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > PSI_WINDOW_SIZE_MS) {
+            get_time_diff_ms(&poll_params->poll_start_tm, &curr_tm) > psi_window_size_ms) {
             /* Polled for the duration of PSI window, time to stop */
             poll_params->poll_handler = NULL;
         }
@@ -4152,6 +4180,7 @@ static bool update_props() {
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = GET_LMK_PROPERTY(int32, "psi_complete_stall_ms",
         DEF_COMPLETE_STALL);
+    psi_window_size_ms = GET_LMK_PROPERTY(int32, "psi_window_size_ms", DEFAULT_PSI_WINDOW_SIZE_MS);
     thrashing_limit_pct =
             std::max(0, GET_LMK_PROPERTY(int32, "thrashing_limit",
                                          low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
@@ -4167,6 +4196,9 @@ static bool update_props() {
             GET_LMK_PROPERTY(int64, "direct_reclaim_threshold_ms", DEF_DIRECT_RECL_THRESH_MS);
     swap_compression_ratio =
             GET_LMK_PROPERTY(int64, "swap_compression_ratio", DEF_SWAP_COMP_RATIO);
+    swap_compression_ratio_div =
+            GET_LMK_PROPERTY(int64, "swap_compression_ratio_div", DEF_SWAP_COMP_RATIO_DIV);
+    relaxed_available_memory = GET_LMK_PROPERTY(bool, "relaxed_available_memory", false);
     lowmem_min_oom_score =
             std::max(PERCEPTIBLE_APP_ADJ + 1,
                      GET_LMK_PROPERTY(int32, "lowmem_min_oom_score", DEF_LOWMEM_MIN_SCORE));
