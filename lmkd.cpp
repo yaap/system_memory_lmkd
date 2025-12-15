@@ -1273,23 +1273,21 @@ static void apply_proc_prio(const struct lmk_procprio& params, struct ucred* cre
         }
     }
 
-    if (!params.for_lmkd_only) {
-        /* gid containing AID_READPROC required */
-        /* CAP_SYS_RESOURCE required */
-        /* CAP_DAC_OVERRIDE required */
-        snprintf(path, sizeof(path), "/proc/%d/oom_score_adj", params.pid);
-        snprintf(val, sizeof(val), "%d", params.oomadj);
-        if (!writefilestring(path, val, false)) {
-            ALOGW("Failed to open %s; errno=%d: process %d might have been killed", path, errno,
-                params.pid);
-            /* If this file does not exist the process is dead. */
-            return;
-        }
+    /* gid containing AID_READPROC required */
+    /* CAP_SYS_RESOURCE required */
+    /* CAP_DAC_OVERRIDE required */
+    snprintf(path, sizeof(path), "/proc/%d/oom_score_adj", params.pid);
+    snprintf(val, sizeof(val), "%d", params.oomadj);
+    if (!writefilestring(path, val, false)) {
+        ALOGW("Failed to open %s; errno=%d: process %d might have been killed", path, errno,
+              params.pid);
+        /* If this file does not exist the process is dead. */
+        return;
+    }
 
-        if (use_inkernel_interface) {
-            stats_store_taskname(params.pid, proc_get_name(params.pid, path, sizeof(path)));
-            return;
-        }
+    if (use_inkernel_interface) {
+        stats_store_taskname(params.pid, proc_get_name(params.pid, path, sizeof(path)));
+        return;
     }
 
     register_oom_adj_proc(params, cred);
@@ -1557,7 +1555,7 @@ static void ctrl_command_handler(int dsock_idx) {
         break;
     case LMK_PROCPRIO:
         /* process type field is optional for backward compatibility */
-        if (nargs < 3 || nargs > 5)
+        if (nargs < 3 || nargs > 4)
             goto wronglen;
         cmd_procprio(packet, nargs, &cred);
         break;

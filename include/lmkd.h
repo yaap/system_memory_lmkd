@@ -108,11 +108,8 @@ struct lmk_procprio {
     uid_t uid;
     int oomadj;
     enum proc_type ptype;
-    // Whether this procprio is for lmkd only. If set, the procprio update will
-    // not be sent to kernel.
-    bool for_lmkd_only;
 };
-#define LMK_PROCPRIO_FIELD_COUNT 5
+#define LMK_PROCPRIO_FIELD_COUNT 4
 #define LMK_PROCPRIO_SIZE (LMK_PROCPRIO_FIELD_COUNT * sizeof(int))
 
 /*
@@ -126,8 +123,6 @@ static inline void lmkd_pack_get_procprio(LMKD_CTRL_PACKET packet, int field_cou
     params->oomadj = ntohl(packet[3]);
     /* if field is missing assume PROC_TYPE_APP for backward compatibility */
     params->ptype = field_count > 3 ? (enum proc_type)ntohl(packet[4]) : PROC_TYPE_APP;
-    /* if field is missing assume false for backward compatibility */
-    params->for_lmkd_only = field_count > 4 ? (bool)ntohl(packet[5]) : false;
 }
 
 /*
@@ -140,8 +135,7 @@ static inline size_t lmkd_pack_set_procprio(LMKD_CTRL_PACKET packet, struct lmk_
     packet[2] = htonl(params->uid);
     packet[3] = htonl(params->oomadj);
     packet[4] = htonl((int)params->ptype);
-    packet[5] = htonl((int)params->for_lmkd_only);
-    return 6 * sizeof(int);
+    return 5 * sizeof(int);
 }
 
 /* LMK_PROCREMOVE packet payload */
@@ -359,7 +353,6 @@ static inline int lmkd_pack_get_procs_prio(LMKD_CTRL_PACKET packet, struct lmk_p
         params->procs[procs_idx].uid = (uid_t)ntohl(packet[packetIdx++]);
         params->procs[procs_idx].oomadj = ntohl(packet[packetIdx++]);
         params->procs[procs_idx].ptype = (enum proc_type)ntohl(packet[packetIdx++]);
-        params->procs[procs_idx].for_lmkd_only = (bool)ntohl(packet[packetIdx++]);
     }
 
     return procs_count;
@@ -380,7 +373,6 @@ static inline size_t lmkd_pack_set_procs_prio(LMKD_CTRL_PACKET packet,
         packet[packetIdx++] = htonl(params->procs[i].uid);
         packet[packetIdx++] = htonl(params->procs[i].oomadj);
         packet[packetIdx++] = htonl((int)params->procs[i].ptype);
-        packet[packetIdx++] = htonl((int)params->procs[i].for_lmkd_only);
     }
 
     return packetIdx * sizeof(int);
