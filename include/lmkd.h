@@ -46,12 +46,22 @@ enum lmk_cmd {
  */
 #define MAX_TARGETS 6
 
+#define MAX_PROCS_PRIO_RECORD_COUNT 3
+
+#define LMK_PROCPRIO_FIELD_COUNT 5
+
+#define MAX_LMK_TARGET_SIZE (MAX_TARGETS * 2 + 1)
+#define MAX_CTRL_PACKET_SIZE (LMK_PROCPRIO_FIELD_COUNT * MAX_PROCS_PRIO_RECORD_COUNT + 1)
+
 /*
  * Max packet length in bytes.
- * Longest packet is LMK_TARGET followed by MAX_TARGETS
- * of minfree and oom_adj_score values
+ * Sized to be the larger of LMK_TARGET and LMK_PROCS_PRIO commands.
  */
-#define CTRL_PACKET_MAX_SIZE (sizeof(int) * (MAX_TARGETS * 2 + 1))
+#if MAX_LMK_TARGET_SIZE > MAX_CTRL_PACKET_SIZE
+#define CTRL_PACKET_MAX_SIZE (sizeof(int) * MAX_LMK_TARGET_SIZE)
+#else
+#define CTRL_PACKET_MAX_SIZE (sizeof(int) * MAX_CTRL_PACKET_SIZE)
+#endif
 
 /* LMKD packet - first int is lmk_cmd followed by payload */
 typedef int LMKD_CTRL_PACKET[CTRL_PACKET_MAX_SIZE / sizeof(int)];
@@ -112,7 +122,6 @@ struct lmk_procprio {
     // not be sent to kernel.
     bool for_lmkd_only;
 };
-#define LMK_PROCPRIO_FIELD_COUNT 5
 #define LMK_PROCPRIO_SIZE (LMK_PROCPRIO_FIELD_COUNT * sizeof(int))
 
 /*
