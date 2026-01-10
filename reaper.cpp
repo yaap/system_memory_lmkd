@@ -101,7 +101,7 @@ void Reaper::victim_priority_setter() {
         auto [uid, pid] = setprio_queue_.pop();
 
         set_process_group_and_prio(uid, pid,
-                                   {"CPUSET_SP_FOREGROUND", "SCHED_SP_FOREGROUND"},
+                                   {"CPUSET_LMKD_REAP_TARGET", "SCHED_LMKD_REAP_TARGET"},
                                    ANDROID_PRIORITY_NORMAL);
     }
 }
