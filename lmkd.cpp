@@ -2650,7 +2650,7 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
                 break;
             }
         }
-        if (killed_size >= 0) {
+        if (killed_size) {
             break;
         }
     }
