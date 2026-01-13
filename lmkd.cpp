@@ -3223,6 +3223,7 @@ static std::string GetCgroupAttributePath(const char* attr) {
 
 // The implementation of this function relies on memcg statistics that are only available in the
 // v1 cgroup hierarchy.
+[[deprecated("memcg v1 is not supported after Dec. 2026")]]
 static void mp_event_common(int data, uint32_t events, struct polling_params *poll_params) {
     int64_t mem_usage, memsw_usage;
     int64_t mem_pressure;
