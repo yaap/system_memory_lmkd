@@ -2647,11 +2647,8 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
 
             killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm, pd);
             if (killed_size >= 0) {
-                break;
+                return killed_size;
             }
-        }
-        if (killed_size) {
-            break;
         }
     }
 
