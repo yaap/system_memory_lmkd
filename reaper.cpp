@@ -200,6 +200,10 @@ bool Reaper::init(int comm_fd) {
         ALOGW("set SCHED_OTHER failed %s", strerror(errno));
     }
 
+    if (pthread_setname_np(setprio_thread_.native_handle(), "lmkd_setprio")) {
+        ALOGW("pthread_setname_np failed: %s", strerror(errno));
+    }
+
     thread_pool_.reserve(THREAD_POOL_SIZE);
     for (unsigned int i = 0; i < THREAD_POOL_SIZE; i++) {
         thread_pool_.push_back(std::thread(&Reaper::reaper_main, this));
