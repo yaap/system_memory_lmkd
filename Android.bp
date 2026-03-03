@@ -13,18 +13,6 @@ soong_config_module_type {
     ],
 }
 
-aconfig_declarations {
-    name: "lmkd_flags",
-    package: "com.android.memory.lmkd.flags",
-    container: "system",
-    srcs: ["flags.aconfig"],
-}
-
-cc_aconfig_library {
-    name: "liblmkd_flags_c",
-    aconfig_declarations: "lmkd_flags",
-}
-
 lmkd_hooks_cc_defaults {
     name: "lmkd_hooks_defaults",
 
@@ -62,7 +50,6 @@ cc_binary {
         "libmemevents",
         "libprocessgroup",
         "libpsi",
-        "liblmkd_flags_c",
     ],
     static_libs: [
         "libstatslogc",

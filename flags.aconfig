@@ -1,9 +1,0 @@
-package: "com.android.memory.lmkd.flags"
-container: "system"
-
-flag {
-  name: "lmkd_use_dmabuf_size"
-  namespace: "android_kernel"
-  description: "This flag controls whether LMKD will use process dmabuf size in its calculations and reports"
-  bug: "424648261"
-}

@@ -44,7 +44,6 @@
 #include <android-base/stringify.h>
 #include <android-base/unique_fd.h>
 #include <bpf/WaitForProgsLoaded.h>
-#include <com_android_memory_lmkd_flags.h>
 #include <cutils/properties.h>
 #include <cutils/sockets.h>
 #include <liblmkd_utils.h>
@@ -64,8 +63,6 @@
 
 #define ATRACE_TAG ATRACE_TAG_ALWAYS
 #include <cutils/trace.h>
-
-using ::com::android::memory::lmkd::flags::lmkd_use_dmabuf_size;
 
 #ifndef __unused
 #define __unused __attribute__((__unused__))
@@ -574,12 +571,6 @@ static bool update_props();
 static bool init_monitors();
 static void destroy_monitors();
 static void init_memevent();
-
-static inline bool can_read_aconfig_flags(void)
-{
-    // Avoid reading aconfig flags until boot is complete
-    return boot_completed_handled;
-}
 
 static int clamp(int low, int high, int value) {
     return std::max(std::min(value, high), low);
@@ -1131,8 +1122,6 @@ static bool read_proc_dmabuf_stat(const char *filename, int pid, char *buf, size
     char path[PROCFS_PATH_MAX];
     ssize_t size;
     int fd;
-
-    if (!can_read_aconfig_flags() || !lmkd_use_dmabuf_size()) return false;
 
     snprintf(path, PROCFS_PATH_MAX, "/proc/%d/%s", pid, filename);
     fd = TEMP_FAILURE_RETRY(open(path, O_RDONLY | O_CLOEXEC));
