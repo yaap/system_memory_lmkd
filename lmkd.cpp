@@ -1210,6 +1210,7 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc, struct ucred*
         procp = static_cast<struct proc*>(calloc(1, sizeof(struct proc)));
         if (!procp) {
             // Oh, the irony.  May need to rebuild our state.
+            if (pidfd >= 0) close(pidfd);
             return;
         }
 
