@@ -111,11 +111,8 @@ static int kill_cgroup_or_process(const Reaper::target_proc& target) {
     if (!sendSignalToProcessGroup(target.uid, target.pid, SIGKILL)) {
         // Most, *but not all* processes are in their own cgroups managed by Android, for example
         // children of adbd. For these processes, the best thing we can do is kill the individual
-        // process.
-        if (target.pidfd >= 0) {
-            return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
-        }
-        return ::kill(target.pid, SIGKILL);
+        // process since we don't want to kill the entire cgroup.
+        return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
     }
 
     return 0;
