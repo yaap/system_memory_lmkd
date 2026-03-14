@@ -73,6 +73,7 @@
 #define VMSTAT_PATH "/proc/vmstat"
 #define PROC_STATUS_TGID_FIELD "Tgid:"
 #define PROC_STATUS_RSS_FIELD "VmRSS:"
+#define PROC_STATUS_ANON_RSS_FIELD "RssAnon:"
 #define PROC_STATUS_SWAP_FIELD "VmSwap:"
 #define NODE_STATS_MARKER "  per-node stats"
 
@@ -2490,6 +2491,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     struct kill_stat kill_st;
     int64_t tgid;
     int64_t rss_kb;
+    int64_t anon_rss_kb;
     int64_t dmabuf_pss_bytes;
     int64_t dmabuf_pss_kb;
     int64_t dmabuf_rss_bytes;
@@ -2516,6 +2518,9 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     if (!parse_status_tag(buf, PROC_STATUS_SWAP_FIELD, &swap_kb)) {
         goto out;
     }
+    if (!parse_status_tag(buf, PROC_STATUS_ANON_RSS_FIELD, &anon_rss_kb)) {
+        goto out;
+    }
 
     if (read_proc_dmabuf_stat("dmabuf_pss", pid, buf, sizeof(buf), &dmabuf_pss_bytes)) {
         dmabuf_pss_kb = dmabuf_pss_bytes / 1024;
@@ -2535,7 +2540,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         goto out;
     }
 
-    mem_st = stats_read_memory_stat(per_app_memcg, pid, uid, rss_kb * 1024, swap_kb * 1024);
+    mem_st = stats_read_memory_stat(per_app_memcg, pid, uid, rss_kb * 1024, anon_rss_kb * 1024,
+                                    dmabuf_rss_bytes, swap_kb * 1024);
 
     snprintf(desc, sizeof(desc), "lmk,%d,%d,%d,%d,%d", pid, ki ? (int)ki->kill_reason : -1,
              procp->oomadj, min_oom_score, ki ? ki->max_thrashing : -1);
@@ -2569,16 +2575,18 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
         kill_st.thrashing = ki->thrashing;
         kill_st.max_thrashing = ki->max_thrashing;
         ALOGI("Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
-              "kB swap, %" PRId64 "kB dmabuf_pss, %" PRId64 "kB dmabuf_rss; reason: %s",
-              taskname, pid, uid, procp->oomadj, rss_kb, swap_kb,
-              dmabuf_pss_kb, dmabuf_rss_kb, ki->kill_desc);
+              "kB anon rss, %" PRId64 "kB swap, %" PRId64 "kB dmabuf_pss, %" PRId64
+              "kB dmabuf_rss; reason: %s",
+              taskname, pid, uid, procp->oomadj, rss_kb, anon_rss_kb, swap_kb, dmabuf_pss_kb,
+              dmabuf_rss_kb, ki->kill_desc);
     } else {
         kill_st.kill_reason = NONE;
         kill_st.thrashing = 0;
         kill_st.max_thrashing = 0;
         ALOGI("Kill '%s' (%d), uid %d, oom_score_adj %d to free %" PRId64 "kB rss, %" PRId64
-              "kb swap, %" PRId64 "kB dmabuf_pss, %" PRId64 "kB dmabuf_rss",
-              taskname, pid, uid, procp->oomadj, rss_kb, swap_kb, dmabuf_pss_kb, dmabuf_rss_kb);
+              "kb anon rss, %" PRId64 "kb swap, %" PRId64 "kB dmabuf_pss, %" PRId64 "kB dmabuf_rss",
+              taskname, pid, uid, procp->oomadj, rss_kb, anon_rss_kb, swap_kb, dmabuf_pss_kb,
+              dmabuf_rss_kb);
     }
     killinfo_log(procp, min_oom_score, rss_kb, swap_kb, dmabuf_pss_kb, dmabuf_rss_kb,
                  ki, mi, wi, tm, pd);
