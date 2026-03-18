@@ -189,7 +189,6 @@ static struct timespec kswapd_start_tm;
 
 static int level_oomadj[VMPRESS_LEVEL_COUNT];
 static int mpevfd[VMPRESS_LEVEL_COUNT] = { -1, -1, -1 };
-static bool pidfd_supported;
 static int last_kill_pid_or_fd = -1;
 static struct timespec last_kill_tm;
 enum vmpressure_level prev_level = VMPRESS_LEVEL_LOW;
@@ -1198,19 +1197,16 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc, struct ucred*
 
     procp = pid_lookup(proc.pid);
     if (!procp) {
-        int pidfd = -1;
-
-        if (pidfd_supported) {
-            pidfd = TEMP_FAILURE_RETRY(pidfd_open(proc.pid, 0));
-            if (pidfd < 0) {
-                ALOGE("pidfd_open for pid %d failed; errno=%d", proc.pid, errno);
-                return;
-            }
+        int pidfd = TEMP_FAILURE_RETRY(pidfd_open(proc.pid, 0));
+        if (pidfd < 0) {
+            ALOGE("pidfd_open for pid %d failed; errno=%d", proc.pid, errno);
+            return;
         }
 
         procp = static_cast<struct proc*>(calloc(1, sizeof(struct proc)));
         if (!procp) {
             // Oh, the irony.  May need to rebuild our state.
+            close(pidfd);
             return;
         }
 
@@ -2367,27 +2363,7 @@ static void watchdog_callback() {
 static Watchdog watchdog(WATCHDOG_TIMEOUT_SEC, watchdog_callback);
 
 static bool is_kill_pending(void) {
-    char buf[24];
-
-    if (last_kill_pid_or_fd < 0) {
-        return false;
-    }
-
-    if (pidfd_supported) {
-        return true;
-    }
-
-    /* when pidfd is not supported base the decision on /proc/<pid> existence */
-    snprintf(buf, sizeof(buf), "/proc/%d/", last_kill_pid_or_fd);
-    if (access(buf, F_OK) == 0) {
-        return true;
-    }
-
-    return false;
-}
-
-static bool is_waiting_for_kill(void) {
-    return pidfd_supported && last_kill_pid_or_fd >= 0;
+    return last_kill_pid_or_fd >= 0;
 }
 
 static void stop_wait_for_proc_kill(bool finished) {
@@ -2417,15 +2393,13 @@ static void stop_wait_for_proc_kill(bool finished) {
         }
     }
 
-    if (pidfd_supported) {
-        /* unregister fd */
-        if (epoll_ctl(epollfd, EPOLL_CTL_DEL, last_kill_pid_or_fd, &epev)) {
-            // Log an error and keep going
-            ALOGE("epoll_ctl for last killed process failed; errno=%d", errno);
-        }
-        maxevents--;
-        close(last_kill_pid_or_fd);
+    /* unregister fd */
+    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, last_kill_pid_or_fd, &epev)) {
+        // Log an error and keep going
+        ALOGE("epoll_ctl for last killed process failed; errno=%d", errno);
     }
+    maxevents--;
+    close(last_kill_pid_or_fd);
 
     last_kill_pid_or_fd = -1;
 }
@@ -2460,11 +2434,6 @@ static void start_wait_for_proc_kill(int pid_or_fd) {
     }
 
     last_kill_pid_or_fd = pid_or_fd;
-
-    if (!pidfd_supported) {
-        /* If pidfd is not supported just store PID and exit */
-        return;
-    }
 
     epev.events = EPOLLIN;
     epev.data.ptr = (void *)&kill_done_hinfo;
@@ -3178,8 +3147,8 @@ update_watermarks:
     }
 
 no_kill:
-    /* Do not poll if kernel supports pidfd waiting */
-    if (is_waiting_for_kill()) {
+    /* Do not poll while waiting on pidfd */
+    if (is_kill_pending()) {
         /* Pause polling if we are waiting for process death notification */
         poll_params->update = POLLING_PAUSE;
         return;
@@ -3443,7 +3412,7 @@ do_kill:
 
         last_report_tm = curr_tm;
     }
-    if (is_waiting_for_kill()) {
+    if (is_kill_pending()) {
         /* pause polling if we are waiting for process death notification */
         poll_params->update = POLLING_PAUSE;
     }
@@ -3748,7 +3717,6 @@ static int init(void) {
         .fd = -1,
     };
     struct epoll_event epev;
-    int pidfd;
     int i;
     int ret;
 
@@ -3833,16 +3801,6 @@ static int init(void) {
     if (reread_file(&file_data) == NULL) {
         ALOGE("Failed to read %s: %s", file_data.filename, strerror(errno));
     }
-
-    /* check if kernel supports pidfd_open syscall */
-    pidfd = TEMP_FAILURE_RETRY(pidfd_open(getpid(), 0));
-    if (pidfd < 0) {
-        pidfd_supported = (errno != ENOSYS);
-    } else {
-        pidfd_supported = true;
-        close(pidfd);
-    }
-    ALOGI("Process polling is %s", pidfd_supported ? "supported" : "not supported" );
 
     if (!lmkd_init_hook()) {
         ALOGE("Failed to initialize LMKD hooks.");
@@ -3953,7 +3911,7 @@ static void mainloop(void) {
                 call_handler(poll_params.poll_handler, &poll_params, 0);
             }
         } else {
-            if (kill_timeout_ms && is_waiting_for_kill()) {
+            if (kill_timeout_ms && is_kill_pending()) {
                 clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
                 delay = kill_timeout_ms - get_time_diff_ms(&last_kill_tm, &curr_tm);
                 /* Wait for pidfds notification or kill timeout to expire */
