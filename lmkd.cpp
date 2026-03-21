@@ -3085,7 +3085,7 @@ update_watermarks:
         kill_reason = DIRECT_RECL_STUCK;
         snprintf(kill_desc, sizeof(kill_desc), "device is stuck in direct reclaim (%ldms > %dms)",
                  direct_reclaim_duration_ms, direct_reclaim_threshold_ms);
-    } else if (check_filecache) {
+    } else if (check_filecache && wmark <= WMARK_HIGH) {
         int64_t file_lru_kb = (vs.field.nr_inactive_file + vs.field.nr_active_file) * page_k;
 
         if (file_lru_kb < filecache_min_kb) {
