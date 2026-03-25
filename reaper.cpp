@@ -106,16 +106,16 @@ void Reaper::victim_priority_setter() {
     }
 }
 
-static int kill_cgroup_or_process(const Reaper::target_proc& target) {
+static bool kill_cgroup_or_process(const Reaper::target_proc& target) {
     // Try a cgroup kill first
     if (!sendSignalToProcessGroup(target.uid, target.pid, SIGKILL)) {
         // Most, *but not all* processes are in their own cgroups managed by Android, for example
         // children of adbd. For these processes, the best thing we can do is kill the individual
         // process since we don't want to kill the entire cgroup.
-        return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
+        return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0) == 0;
     }
 
-    return 0;
+    return true;
 }
 
 void Reaper::reaper_main() {
@@ -138,7 +138,7 @@ void Reaper::reaper_main() {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &start_tm);
         }
 
-        if (kill_cgroup_or_process(target)) {
+        if (!kill_cgroup_or_process(target)) {
             // Inform the main thread about failure to kill
             notify_kill_failure(target.pid);
             goto done;
@@ -237,10 +237,10 @@ bool Reaper::async_kill(const struct target_proc& target) {
     return ret;
 }
 
-int Reaper::kill(const struct target_proc& target, bool synchronous) {
+bool Reaper::kill(const struct target_proc& target, bool synchronous) {
     if (!synchronous && async_kill(target)) {
         // we assume the kill will be successful and if it fails we will be notified
-        return 0;
+        return true;
     }
 
     return kill_cgroup_or_process(target);

@@ -2349,7 +2349,7 @@ static void watchdog_callback() {
             continue;
         }
 
-        if (target.valid && reaper.kill({ target.pidfd, target.pid, target.uid }, true) == 0) {
+        if (target.valid && reaper.kill({ target.pidfd, target.pid, target.uid }, true)) {
             ALOGW("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
             killinfo_log(&target, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL);
             // Can't call pid_remove() from non-main thread, therefore just invalidate the record
@@ -2454,7 +2454,6 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     int pidfd = procp->pidfd;
     uid_t uid = procp->uid;
     char *taskname;
-    int kill_result;
     int result = -1;
     struct memory_stat *mem_st;
     struct kill_stat kill_st;
@@ -2526,9 +2525,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
       return result;
     }
     start_wait_for_proc_kill(pidfd < 0 ? pid : pidfd);
-    kill_result = reaper.kill({ pidfd, pid, uid }, false);
 
-    if (kill_result) {
+    if (!reaper.kill({ pidfd, pid, uid }, false)) {
         stop_wait_for_proc_kill(false);
         ALOGE("kill(%d): errno=%d", pid, errno);
         /* Delete process record even when we fail to kill so that we don't get stuck on it */
