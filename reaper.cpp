@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/pidfd.h>
 #include <sys/resource.h>
@@ -26,8 +27,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <memory>
 #include <mutex>
 
+#include <android-base/file.h>
 #include <log/log.h>
 #include <processgroup/processgroup.h>
 #include <system/thread_defs.h>
@@ -106,16 +109,58 @@ void Reaper::victim_priority_setter() {
     }
 }
 
-static int kill_cgroup_or_process(const Reaper::target_proc& target) {
+template<class... Ts>
+struct overloaded : Ts... { using Ts::operator()...; };
+
+static bool kill_cgroup_or_process(const Reaper::target_proc& target) {
+    using android::base::WriteStringToFd;
+
     // Try a cgroup kill first
-    if (!sendSignalToProcessGroup(target.uid, target.pid, SIGKILL)) {
+    if (!target.cgroupfd || !std::visit(overloaded{
+            [](CgroupKillFD killFD) { return WriteStringToFd("1", killFD.fd); },
+            [](CgroupProcsFD procsFD) { // 5.10 kernels only
+                char buf[512];
+
+                if (lseek(procsFD.fd, 0, SEEK_SET) < 0) return false;
+
+                ssize_t bytes_read;
+                pid_t pid = 0;
+                bool has_pid = false;
+
+                while ((bytes_read = TEMP_FAILURE_RETRY(read(procsFD.fd, buf, sizeof(buf)))) > 0) {
+                    for (ssize_t i = 0; i < bytes_read; ++i) {
+                        if (buf[i] >= '0' && buf[i] <= '9') {
+                            pid = pid * 10 + (buf[i] - '0');
+                            has_pid = true;
+                        } else if (has_pid && buf[i] == '\n') {
+                            if (pid > 0) ::kill(pid, SIGKILL);
+
+                            pid = 0;
+                            has_pid = false;
+                        } else {
+                            ALOGE("Unexpected char %x in cgroup.procs", buf[i]);
+                            return false;
+                        }
+                    }
+                }
+
+                return true;
+            },
+        }, *target.cgroupfd)) {
+        // Fallback to pidfd kill
         // Most, *but not all* processes are in their own cgroups managed by Android, for example
         // children of adbd. For these processes, the best thing we can do is kill the individual
         // process since we don't want to kill the entire cgroup.
-        return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0);
+        return pidfd_send_signal(target.pidfd, SIGKILL, NULL, 0) == 0;
     }
 
-    return 0;
+    return true;
+}
+
+void close(const CgroupFD& cgroupfd) {
+    if (cgroupfd) {
+        std::visit([](auto&& arg) { close(arg.fd); }, *cgroupfd);
+    }
 }
 
 void Reaper::reaper_main() {
@@ -138,7 +183,7 @@ void Reaper::reaper_main() {
             clock_gettime(CLOCK_MONOTONIC_COARSE, &start_tm);
         }
 
-        if (kill_cgroup_or_process(target)) {
+        if (!kill_cgroup_or_process(target)) {
             // Inform the main thread about failure to kill
             notify_kill_failure(target.pid);
             goto done;
@@ -158,6 +203,7 @@ void Reaper::reaper_main() {
 
 done:
         close(target.pidfd);
+        close(target.cgroupfd);
         reap_queue_.request_complete();
     }
 }
@@ -231,16 +277,21 @@ bool Reaper::async_kill(const struct target_proc& target) {
     // Duplicate pidfd instead of reusing the original one to avoid synchronization and refcounting
     // when both reaper and main threads are using or closing the pidfd
     int pidfd = dup(target.pidfd);
-    bool ret = reap_queue_.push({pidfd, target.pid, target.uid});
-    if (!ret) close(pidfd);
+    CgroupFD cgroupfd = target.cgroupfd;
+    if (cgroupfd) std::visit([](auto&& arg) { arg.fd = dup(arg.fd); }, *cgroupfd);
+    bool ret = reap_queue_.push({pidfd, cgroupfd, target.pid, target.uid});
+    if (!ret) {
+        close(pidfd);
+        close(cgroupfd);
+    }
 
     return ret;
 }
 
-int Reaper::kill(const struct target_proc& target, bool synchronous) {
+bool Reaper::kill(const struct target_proc& target, bool synchronous) {
     if (!synchronous && async_kill(target)) {
         // we assume the kill will be successful and if it fails we will be notified
-        return 0;
+        return true;
     }
 
     return kill_cgroup_or_process(target);

@@ -18,16 +18,27 @@
 
 #include <sys/types.h>
 
+#include <optional>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "threadsafe_queue.h"
+
+struct CgroupKillFD { int fd; };
+struct CgroupProcsFD { int fd; };
+
+using CgroupFD = std::optional<std::variant<CgroupKillFD, CgroupProcsFD>>;
+
+// Close the file descriptor in cgroupfd if one exists
+void close(const CgroupFD& cgroupfd);
 
 class Reaper {
 public:
     struct target_proc {
         int pidfd;
+        CgroupFD cgroupfd;
         pid_t pid;
         uid_t uid;
     };
@@ -55,6 +66,6 @@ public:
     int thread_cnt() const { return thread_pool_.size(); }
     void enable_debug(bool enable) { debug_enabled_ = enable; }
 
-    // return 0 on success or error code returned by the syscall
-    int kill(const struct target_proc& target, bool synchronous);
+    // return true on success. errno may be set on failure.
+    bool kill(const struct target_proc& target, bool synchronous);
 };
