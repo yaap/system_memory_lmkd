@@ -3032,7 +3032,7 @@ update_watermarks:
         kill_reason = PRESSURE_AFTER_KILL;
         strncpy(kill_desc, "min watermark is breached even after kill", sizeof(kill_desc));
         kill_desc[sizeof(kill_desc) - 1] = '\0';
-    } else if (level == VMPRESS_LEVEL_CRITICAL && events != 0) {
+    } else if (level == VMPRESS_LEVEL_CRITICAL && events != 0 && wmark <= WMARK_HIGH) {
         /*
          * Device is too busy reclaiming memory which might lead to ANR.
          * Critical level is triggered when PSI complete stall (all tasks are blocked because
