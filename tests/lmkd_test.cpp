@@ -350,9 +350,8 @@ TEST(lmkd, check_for_oom) {
     }
     GTEST_LOG_(INFO) << "====Logged kills====" << std::endl
                      << kill_logs.str();
-    EXPECT_TRUE(hit_count == STEP_COUNT) << "Number of kills " << hit_count
-                                         << " is less than expected "
-                                         << STEP_COUNT;
+    EXPECT_GE(hit_count, STEP_COUNT) << "Number of kills " << hit_count
+                                     << " is less than expected " << STEP_COUNT;
 
     // 2. check kernel logs for OOM kills
     pos = logcat_out.find(OOM_MARKER);

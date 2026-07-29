@@ -44,7 +44,7 @@ MemcgVersion memcg_version();
  * Max LMKD reply packet length in bytes
  * Notes about size calculation:
  * 4 bytes for packet type
- * 80 bytes for the LmkKillOccurred fields: memory_stat + kill_stat (note that
+ * 96 bytes for the LmkKillOccurred fields: memory_stat + kill_stat (note that
  *     two of kill_stat's 64-bit fields are encoded as 32-bit fields).
  * 2 bytes for process name string size
  * MAX_TASKNAME_LEN bytes for the process name string
@@ -53,7 +53,7 @@ MemcgVersion memcg_version();
  * - LMKD_REPLY_MAX_SIZE in LmkdConnection.java
  * - KILL_OCCURRED_MSG_SIZE in LmkdStatsReporter.java
  */
-#define LMKD_REPLY_MAX_SIZE 214
+#define LMKD_REPLY_MAX_SIZE 230
 
 /* LMK_MEMORY_STATS packet payload */
 struct memory_stat {
@@ -61,6 +61,8 @@ struct memory_stat {
     int64_t pgmajfault;
     int64_t rss_in_bytes;
     int64_t cache_in_bytes;
+    int64_t anon_rss_in_bytes;
+    int64_t dmabuf_rss_in_bytes;
     int64_t swap_in_bytes;
     int64_t process_start_time_ns;
 };
@@ -117,8 +119,9 @@ size_t lmkd_pack_set_kill_occurred(LMK_KILL_OCCURRED_PACKET packet,
 /**
  * Reads memory stats used to log the statsd atom. Returns non-null ptr on success.
  */
-struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid,
-                                           int64_t rss_bytes, int64_t swap_bytes);
+struct memory_stat* stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid,
+                                           int64_t rss_bytes, int64_t anon_rss_bytes,
+                                           int64_t dmabuf_rss_bytes, int64_t swap_bytes);
 
 /**
  * Registers a process taskname by pid, while it is still alive.

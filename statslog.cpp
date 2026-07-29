@@ -175,8 +175,9 @@ static int memory_stat_from_procfs(struct memory_stat* mem_st, int pid) {
     return 0;
 }
 
-struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid,
-                                           int64_t rss_bytes, int64_t swap_bytes) {
+struct memory_stat* stats_read_memory_stat(bool per_app_memcg, int pid, uid_t uid,
+                                           int64_t rss_bytes, int64_t anon_rss_bytes,
+                                           int64_t dmabuf_rss_bytes, int64_t swap_bytes) {
     static struct memory_stat mem_st = {};
     if (!enable_stats_log) {
         return NULL;
@@ -186,6 +187,8 @@ struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t ui
         if (memory_stat_from_cgroup(&mem_st, pid, uid) == 0) {
             if (memcg_version() == MemcgVersion::kV2) {
                 mem_st.rss_in_bytes = rss_bytes;
+                mem_st.anon_rss_in_bytes = anon_rss_bytes;
+                mem_st.dmabuf_rss_in_bytes = dmabuf_rss_bytes;
                 mem_st.swap_in_bytes = swap_bytes;
             }
             return &mem_st;
@@ -193,6 +196,8 @@ struct memory_stat *stats_read_memory_stat(bool per_app_memcg, int pid, uid_t ui
     }
     if (memory_stat_from_procfs(&mem_st, pid) == 0) {
         mem_st.rss_in_bytes = rss_bytes;
+        mem_st.anon_rss_in_bytes = anon_rss_bytes;
+        mem_st.dmabuf_rss_in_bytes = dmabuf_rss_bytes;
         mem_st.swap_in_bytes = swap_bytes;
         return &mem_st;
     }
@@ -344,6 +349,8 @@ size_t lmkd_pack_set_kill_occurred(LMK_KILL_OCCURRED_PACKET packet,
         index = pack_int64(packet, index, mem_stat->pgmajfault);
         index = pack_int64(packet, index, mem_stat->rss_in_bytes);
         index = pack_int64(packet, index, mem_stat->cache_in_bytes);
+        index = pack_int64(packet, index, mem_stat->anon_rss_in_bytes);
+        index = pack_int64(packet, index, mem_stat->dmabuf_rss_in_bytes);
         index = pack_int64(packet, index, mem_stat->swap_in_bytes);
         index = pack_int64(packet, index, mem_stat->process_start_time_ns);
     } else {

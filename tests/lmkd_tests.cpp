@@ -24,6 +24,7 @@
 #include <cutils/properties.h>
 #include <gtest/gtest.h>
 #include <liblmkd_utils.h>
+#include <lmkd.h>
 #include <log/log_properties.h>
 #include <private/android_filesystem_config.h>
 #include <stdlib.h>
@@ -94,7 +95,9 @@ class LmkdTest : public ::testing::Test {
 
     virtual void TearDown() {
         // drop lmkd connection
-        close(sock);
+        if (sock >= 0) {
+            close(sock);
+        }
     }
 
     void SetupChild(pid_t pid, int oomadj) {
@@ -187,6 +190,30 @@ class LmkdTest : public ::testing::Test {
     }
 
     uid_t getLmkdTestUid() const { return uid; }
+
+    int getSock() const { return sock; }
+
+    void ReconnectLmkd() {
+        if (sock >= 0) {
+            close(sock);
+            sock = -1;
+        }
+        // lmkd might take a moment to restart and create its socket
+        for (int i = 0; i < 20; i++) {  // Retry for up to 2 seconds
+            sock = lmkd_connect();
+            if (sock >= 0) {
+                return;
+            }
+            usleep(100000);
+        }
+        FAIL() << "Failed to reconnect to lmkd, err=" << strerror(errno);
+    }
+
+    void RestartLmkd() {
+        ExecCommand("stop lmkd");
+        ExecCommand("start lmkd");
+        ReconnectLmkd();
+    }
 
   private:
     int sock;
@@ -353,6 +380,28 @@ TEST_F(LmkdTest, batch_procs_oom_score_adj) {
         ASSERT_EQ(child_info.req_new_oom_score, actual_new_oom_score)
                 << "Child with pid=" << child_info.pid << " didn't update its OOM score";
     }
+}
+
+// Verifies that lmkd correctly handles the LMK_BOOT_COMPLETED command and tracks the boot
+// completed state. This is important for features that are gated on boot completion, like
+// reading aconfig flags for dmabuf accounting.
+TEST_F(LmkdTest, BootCompletedHandling) {
+    // This test requires the ability to restart lmkd to reset its internal state.
+    RestartLmkd();
+
+    // 1. Test that lmkd rejects the command if sys.boot_completed is not set.
+    ASSERT_EQ(property_set("sys.boot_completed", "false"), 0);
+    enum boot_completed_notification_result res = lmkd_notify_boot_completed(getSock());
+    ASSERT_EQ(res, BOOT_COMPLETED_NOTIF_FAILS);
+
+    // 2. Test that lmkd accepts the command once sys.boot_completed is set.
+    ASSERT_EQ(property_set("sys.boot_completed", "true"), 0);
+    res = lmkd_notify_boot_completed(getSock());
+    ASSERT_EQ(res, BOOT_COMPLETED_NOTIF_SUCCESS);
+
+    // 3. Test that lmkd reports "already handled" on subsequent calls.
+    res = lmkd_notify_boot_completed(getSock());
+    ASSERT_EQ(res, BOOT_COMPLETED_NOTIF_ALREADY_HANDLED);
 }
 
 int main(int argc, char** argv) {
